@@ -15,7 +15,18 @@
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT License">
 </p>
 
+<p align="center">
+  <a href="https://github.com/bedriyan/speakink/releases/latest"><strong>Download Latest Release</strong></a>
+</p>
+
 ---
+
+## Download
+
+| Build | Architecture | Default Engine |
+|-------|-------------|----------------|
+| [**Speakink-Apple-Silicon.dmg**](https://github.com/bedriyan/speakink/releases/latest/download/Speakink-1.0.0-Apple-Silicon.dmg) | Apple Silicon (M1/M2/M3/M4) | Parakeet V3 |
+| [**Speakink-Intel.dmg**](https://github.com/bedriyan/speakink/releases/latest/download/Speakink-1.0.0-Intel.dmg) | Intel (x86_64) | Whisper Medium Q5 |
 
 ## Features
 
@@ -27,18 +38,11 @@
 - **Smart Text Cleanup** — Removes filler words (um, uh, like), fixes capitalization and spacing
 - **Custom Dictionary** — Define word replacements to fix common misheard terms
 - **Dynamic Island Overlay** — Amber-themed notch animation with live waveform during recording
-- **Transcription History** — Full history with search, copy, and delete
-- **Transcribe Audio Files** — Drag and drop audio files for transcription
+- **Dashboard** — Usage statistics with today and all-time transcription counts, minutes, and words
+- **Transcription History** — Full history with search, date grouping, copy, re-transcribe, and Reveal in Finder
+- **Transcribe Audio Files** — Drag and drop or browse audio files for transcription
+- **Auto-Cleanup** — Configurable automatic deletion of old recordings and transcriptions
 - **Dual Platform** — Native builds for both Apple Silicon and Intel Macs
-
-## Download
-
-Head to [**Releases**](https://github.com/bedriyan/speakink/releases) and download the right build for your Mac:
-
-| Build | Architecture | Default Engine |
-|-------|-------------|----------------|
-| **Speakink-Apple-Silicon.dmg** | Apple Silicon (M1/M2/M3/M4) | Parakeet V3 |
-| **Speakink-Intel.dmg** | Intel (x86_64) | Whisper Medium Q5 |
 
 ## Supported Models
 
@@ -46,9 +50,15 @@ Head to [**Releases**](https://github.com/bedriyan/speakink/releases) and downlo
 |-------|------|------|-------|----------|----------|
 | Parakeet V3 | Local (CoreML) | ~494MB | 5/5 | 5/5 | Apple Silicon only |
 | Whisper Medium Q5 | Local (whisper.cpp) | ~539MB | 3/5 | 4/5 | Both |
-| Whisper Medium | Local (whisper.cpp) | ~1.5GB | 2/5 | 4/5 | Both |
-| Whisper Large v2 | Local (whisper.cpp) | ~2.9GB | 1/5 | 5/5 | Both |
 | Groq Whisper | Cloud (API) | — | 5/5 | 5/5 | Both |
+| Whisper Medium | Local (whisper.cpp) | ~1.5GB | 2/5 | 4/5 | Both |
+| Whisper Small | Local (whisper.cpp) | ~466MB | 4/5 | 3/5 | Both |
+| Whisper Small Q5 | Local (whisper.cpp) | ~190MB | 4/5 | 3/5 | Both |
+| Whisper Base | Local (whisper.cpp) | ~142MB | 5/5 | 2/5 | Both |
+| Whisper Base Q5 | Local (whisper.cpp) | ~60MB | 5/5 | 2/5 | Both |
+| Whisper Tiny | Local (whisper.cpp) | ~75MB | 5/5 | 1/5 | Both |
+| Whisper Large v1 | Local (whisper.cpp) | ~2.9GB | 1/5 | 4/5 | Both |
+| Whisper Large v2 | Local (whisper.cpp) | ~2.9GB | 1/5 | 5/5 | Both |
 
 You can also import custom `.bin` Whisper models.
 
@@ -86,6 +96,7 @@ Speakink/
 ├── Models/
 │   ├── Transcription.swift     # SwiftData model
 │   ├── TranscriptionModel.swift # Model metadata + arch-aware availability
+│   ├── UsageStatistics.swift   # Cumulative usage counters
 │   ├── WordReplacement.swift   # Custom dictionary entries
 │   └── Settings.swift          # App preferences (UserDefaults)
 ├── Services/
@@ -95,6 +106,7 @@ Speakink/
 │   ├── HotkeyManager.swift     # Global keyboard shortcuts
 │   ├── ModelManager.swift      # Model download + cache
 │   ├── TextCleanupService.swift # Filler word removal
+│   ├── CleanupService.swift    # Auto-cleanup old transcriptions
 │   └── Transcription/
 │       ├── TranscriptionEngine.swift # Protocol
 │       ├── WhisperEngine.swift       # Local (whisper.cpp)
@@ -108,7 +120,7 @@ Speakink/
 │   ├── AudioLevelMonitor.swift # Real-time audio levels
 │   └── WAVWriter.swift         # WAV file encoding
 └── Views/
-    ├── MainWindow/             # History, AI Models, Dictionary, Settings
+    ├── MainWindow/             # Dashboard, History, AI Models, Dictionary, Settings
     ├── Onboarding/             # First-launch setup flow
     ├── Overlay/                # Dynamic Island recording UI
     ├── MenuBar/                # Menu bar controls
