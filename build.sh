@@ -2,7 +2,7 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_NAME="Speakink"
+APP_NAME="Speaky"
 LOCAL_APP="$PROJECT_DIR/$APP_NAME.app"
 RELEASE_DIR="$PROJECT_DIR/release"
 VERSION=$(grep 'MARKETING_VERSION' "$PROJECT_DIR/project.yml" | head -1 | sed 's/.*"\(.*\)".*/\1/')

@@ -1,0 +1,321 @@
+import SwiftUI
+import AVFoundation
+
+enum OnboardingStep: Int, CaseIterable {
+    case permissions = 0
+    case modelDownload
+    case complete
+}
+
+struct OnboardingContainerView: View {
+    @Binding var hasCompletedOnboarding: Bool
+    @State private var currentStep: OnboardingStep = .permissions
+
+    var body: some View {
+        ZStack {
+            OnboardingBackgroundView()
+
+            VStack(spacing: 0) {
+                if currentStep != .complete {
+                    OnboardingProgressView(
+                        currentStep: currentStep.rawValue,
+                        totalSteps: 2
+                    )
+                    .padding(.top, 32)
+                }
+
+                Spacer()
+
+                Group {
+                    switch currentStep {
+                    case .permissions:
+                        OnboardingPermissionsView {
+                            withAnimation(.easeInOut(duration: 0.4)) {
+                                currentStep = .modelDownload
+                            }
+                        }
+                    case .modelDownload:
+                        OnboardingModelDownloadView {
+                            withAnimation(.easeInOut(duration: 0.4)) {
+                                currentStep = .complete
+                            }
+                        }
+                    case .complete:
+                        OnboardingDoneView {
+                            hasCompletedOnboarding = true
+                        }
+                    }
+                }
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity)
+                ))
+
+                Spacer()
+            }
+        }
+        .frame(minWidth: 500, minHeight: 440)
+    }
+}
+
+// MARK: - Background
+
+struct OnboardingBackgroundView: View {
+    var body: some View {
+        ZStack {
+            Theme.bgDark
+
+            RadialGradient(
+                gradient: Gradient(colors: [
+                    Theme.amber.opacity(0.12),
+                    Theme.amber.opacity(0.04),
+                    Color.clear
+                ]),
+                center: .top,
+                startRadius: 30,
+                endRadius: 500
+            )
+        }
+        .ignoresSafeArea()
+    }
+}
+
+// MARK: - Progress Dots
+
+struct OnboardingProgressView: View {
+    let currentStep: Int
+    let totalSteps: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(0..<totalSteps, id: \.self) { index in
+                Capsule()
+                    .fill(index <= currentStep ? Theme.amber : Color.white.opacity(0.2))
+                    .frame(width: index == currentStep ? 24 : 8, height: 6)
+                    .animation(.spring(response: 0.4, dampingFraction: 0.7), value: currentStep)
+            }
+        }
+    }
+}
+
+// MARK: - Combined Permissions Step
+
+struct OnboardingPermissionsView: View {
+    let onContinue: () -> Void
+
+    @State private var micGranted = false
+    @State private var micDenied = false
+    @State private var accessibilityGranted = false
+    @State private var checkTimer: Timer?
+    @State private var showContent = false
+
+    private var allGranted: Bool {
+        micGranted && accessibilityGranted
+    }
+
+    var body: some View {
+        VStack(spacing: 24) {
+            ZStack {
+                Circle()
+                    .fill(allGranted ? Theme.success.opacity(0.15) : Theme.amber.opacity(0.12))
+                    .frame(width: 100, height: 100)
+
+                Image(systemName: allGranted ? "checkmark.circle.fill" : "shield.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(allGranted ? Theme.success : Theme.amber)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+
+            VStack(spacing: 8) {
+                Text("Permissions")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+
+                Text("Speaky needs microphone access to record and accessibility access to paste text.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+
+            // Permission cards
+            VStack(spacing: 12) {
+                permissionCard(
+                    icon: "mic.fill",
+                    title: "Microphone",
+                    granted: micGranted,
+                    action: requestMicPermission
+                )
+
+                permissionCard(
+                    icon: "accessibility",
+                    title: "Accessibility",
+                    granted: accessibilityGranted,
+                    action: requestAccessibility
+                )
+            }
+            .frame(maxWidth: 360)
+
+            Spacer().frame(height: 8)
+
+            VStack(spacing: 12) {
+                Button(action: onContinue) {
+                    Text("Continue")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.black)
+                        .frame(width: 220, height: 48)
+                        .background(Theme.amberGradient)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.handCursor)
+            }
+        }
+        .opacity(showContent ? 1 : 0)
+        .offset(y: showContent ? 0 : 20)
+        .onAppear {
+            checkPermissions()
+            withAnimation(.easeOut(duration: 0.5)) { showContent = true }
+
+            // Auto-advance if both already granted
+            if allGranted {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    onContinue()
+                }
+            }
+        }
+        .onDisappear {
+            checkTimer?.invalidate()
+        }
+    }
+
+    private func permissionCard(icon: String, title: String, granted: Bool, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 20))
+                .foregroundStyle(granted ? Theme.success : Theme.amber)
+                .frame(width: 36)
+
+            Text(title)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Theme.textPrimary)
+
+            Spacer()
+
+            if granted {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Theme.success)
+            } else {
+                Button("Grant") {
+                    action()
+                }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.amber)
+                .buttonStyle(.handCursor)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(granted ? Theme.success.opacity(0.06) : Theme.bgCard)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(granted ? Theme.success.opacity(0.2) : Color.white.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func checkPermissions() {
+        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        micDenied = AVCaptureDevice.authorizationStatus(for: .audio) == .denied
+        accessibilityGranted = AXIsProcessTrusted()
+    }
+
+    private func requestMicPermission() {
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                    micGranted = granted
+                    micDenied = !granted
+                }
+            }
+        }
+    }
+
+    private func requestAccessibility() {
+        PasteService.requestAccessibility()
+        checkTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            let trusted = AXIsProcessTrusted()
+            if trusted {
+                checkTimer?.invalidate()
+                DispatchQueue.main.async {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                        accessibilityGranted = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Done Step
+
+struct OnboardingDoneView: View {
+    let onFinish: () -> Void
+    @Environment(AppState.self) private var appState
+    @State private var showContent = false
+
+    var body: some View {
+        VStack(spacing: 24) {
+            ZStack {
+                Circle()
+                    .fill(Theme.success.opacity(0.15))
+                    .frame(width: 100, height: 100)
+
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(Theme.success)
+            }
+
+            VStack(spacing: 8) {
+                Text("You're all set!")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+
+                Text("Press your hotkey to start recording. Press again to stop and auto-paste.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 400)
+            }
+
+            HStack(spacing: 16) {
+                Image(systemName: "command")
+                    .font(.system(size: 20))
+                    .foregroundStyle(Theme.amber)
+                Text("Default: Right Command (⌘)")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .padding(14)
+            .background(Theme.bgCard)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            Spacer().frame(height: 8)
+
+            Button(action: onFinish) {
+                Text("Start Using Speaky")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .frame(width: 240, height: 48)
+                    .background(Theme.amberGradient)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.handCursor)
+        }
+        .opacity(showContent ? 1 : 0)
+        .offset(y: showContent ? 0 : 20)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.5)) { showContent = true }
+        }
+    }
+}

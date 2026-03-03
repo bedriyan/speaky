@@ -1,4 +1,4 @@
-name: Speakink
+name: Speaky
 options:
   bundleIdPrefix: com.bedriyan
   deploymentTarget:
@@ -26,11 +26,15 @@ packages:
     branch: main
 
 targets:
-  Speakink:
+  Speaky:
     type: application
     platform: macOS
     sources:
-      - Speakink
+      - Speaky
+      - path: Speaky/Resources/Speaky
+        type: folder
+      - path: Speaky/Resources/Sounds
+        type: folder
     settings:
       configs:
         Debug:
@@ -38,15 +42,15 @@ targets:
         Release:
           ONLY_ACTIVE_ARCH: false
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.bedriyan.speakink
-        PRODUCT_NAME: Speakink
-        MARKETING_VERSION: "1.0.0"
+        PRODUCT_BUNDLE_IDENTIFIER: com.bedriyan.speaky
+        PRODUCT_NAME: Speaky
+        MARKETING_VERSION: "2.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         ARCHS: "arm64 x86_64"
-        CODE_SIGN_ENTITLEMENTS: Speakink/Resources/Speakink.entitlements
-        INFOPLIST_FILE: Speakink/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Speaky/Resources/Speaky.entitlements
+        INFOPLIST_FILE: Speaky/Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_HARDENED_RUNTIME: true
         CODE_SIGN_IDENTITY: "-"
@@ -64,6 +68,6 @@ targets:
       - sdk: Carbon.framework
 
     entitlements:
-      path: Speakink/Resources/Speakink.entitlements
+      path: Speaky/Resources/Speaky.entitlements
       properties:
         com.apple.security.device.audio-input: true
