@@ -1,0 +1,40 @@
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+DerivedData/
+build/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.moved-aside
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+.build/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# SPM
+.swiftpm/
+Packages/
+Package.resolved
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# CocoaPods
+Pods/
+
+# Built app & release artifacts
+Speakink.app/
+release/
+
+# AI / development tools
+.claude/
+.planning/
+CLAUDE.md
