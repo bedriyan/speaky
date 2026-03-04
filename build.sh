@@ -31,7 +31,10 @@ find_built_app() {
 prepare_app() {
     local app_path="$1"
     xattr -cr "$app_path"
-    codesign --force --deep --sign - --identifier com.bedriyan.speaky "$app_path"
+    # Deep-sign nested frameworks/bundles first, then re-sign the main app
+    # with explicit identifier so macOS Accessibility matches the bundle ID
+    codesign --force --deep --sign - "$app_path"
+    codesign --force --sign - --identifier com.bedriyan.speaky "$app_path"
 }
 
 # Helper: create DMG using dmgbuild (with drag-to-Applications visual)
