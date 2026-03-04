@@ -31,24 +31,38 @@ final class AudioRecorder: @unchecked Sendable {
 
         let engine = AVAudioEngine()
 
-        // Set input device if specified
+        // Set input device if specified, with validation and fallback
         if let deviceID {
-            let inputNode = engine.inputNode
-            var deviceIDVar = deviceID
-            let size = UInt32(MemoryLayout<AudioDeviceID>.size)
-            let status = AudioUnitSetProperty(
-                inputNode.audioUnit!,
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global, 0,
-                &deviceIDVar, size
-            )
-            if status != noErr {
-                throw AudioRecorderError.failedToSetDevice(status)
+            // Verify the device still exists before trying to set it
+            let availableDevices = AudioControlService.inputDevices()
+            let deviceExists = availableDevices.contains { $0.id == deviceID }
+
+            if deviceExists {
+                let inputNode = engine.inputNode
+                var deviceIDVar = deviceID
+                let size = UInt32(MemoryLayout<AudioDeviceID>.size)
+                let status = AudioUnitSetProperty(
+                    inputNode.audioUnit!,
+                    kAudioOutputUnitProperty_CurrentDevice,
+                    kAudioUnitScope_Global, 0,
+                    &deviceIDVar, size
+                )
+                if status != noErr {
+                    logger.warning("Failed to set device \(deviceID) (status \(status)) — falling back to system default")
+                    // Fall through to use system default
+                }
+            } else {
+                logger.warning("Selected device \(deviceID) not available — using system default")
             }
         }
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        // Validate the input format — some devices report 0 channels or 0 sample rate
+        guard inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
+            throw AudioRecorderError.failedToSetFormat(0)
+        }
 
         // Target format: 16kHz mono Float32
         guard let targetFormat = AVAudioFormat(

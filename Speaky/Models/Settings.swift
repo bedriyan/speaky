@@ -51,7 +51,7 @@ final class AppSettings {
             #if arch(arm64)
             return "parakeet-v3"
             #else
-            return "whisper-medium-q5_0"
+            return "whisper-small-q5_1"
             #endif
         }()
 
