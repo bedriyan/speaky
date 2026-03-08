@@ -27,10 +27,11 @@ final class AppState {
 
     let settings = AppSettings()
     let hotkeyManager = HotkeyManager()
-    private(set) lazy var coordinator: TranscriptionCoordinator = TranscriptionCoordinator(settings: settings)
-
-    /// Convenience accessor for views that need the model manager.
-    var modelManager: ModelManager { coordinator.modelManager }
+    let modelManager = ModelManager()
+    private(set) lazy var coordinator: TranscriptionCoordinator = TranscriptionCoordinator(
+        settings: settings,
+        modelManager: modelManager
+    )
 
     // SwiftData container for saving transcriptions
     var modelContext: ModelContext?

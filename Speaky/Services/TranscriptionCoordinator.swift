@@ -10,12 +10,12 @@ private let logger = Logger.speaky(category: "TranscriptionCoordinator")
 /// UI state management remains in AppState.
 @MainActor
 final class TranscriptionCoordinator {
-    let audioRecorder: AudioRecorder
-    let pasteService: PasteService
-    let audioControl: AudioControlService
-    let modelManager: ModelManager
-    let deviceGuard: DeviceGuard
-    let soundEffect: SoundEffectService
+    let audioRecorder: any AudioRecording
+    let pasteService: any Pasting
+    let audioControl: any AudioControlling
+    let modelManager: any ModelManaging
+    let deviceGuard: any DeviceGuarding
+    let soundEffect: any SoundEffecting
 
     private(set) var currentEngine: (any TranscriptionEngine)?
     private var currentEngineModelID: String?
@@ -26,12 +26,12 @@ final class TranscriptionCoordinator {
 
     init(
         settings: AppSettings,
-        audioRecorder: AudioRecorder = AudioRecorder(),
-        pasteService: PasteService = PasteService(),
-        audioControl: AudioControlService = AudioControlService(),
-        modelManager: ModelManager = ModelManager(),
-        deviceGuard: DeviceGuard = DeviceGuard(),
-        soundEffect: SoundEffectService = SoundEffectService()
+        audioRecorder: any AudioRecording = AudioRecorder(),
+        pasteService: any Pasting = PasteService(),
+        audioControl: any AudioControlling = AudioControlService(),
+        modelManager: any ModelManaging = ModelManager(),
+        deviceGuard: any DeviceGuarding = DeviceGuard(),
+        soundEffect: any SoundEffecting = SoundEffectService()
     ) {
         self.settings = settings
         self.audioRecorder = audioRecorder
@@ -164,7 +164,7 @@ final class TranscriptionCoordinator {
 
     // MARK: - Transcription
 
-    /// Run the full transcription pipeline: persist audio, transcribe with resilience,
+    /// Run the full transcription pipeline: transcribe with resilience,
     /// apply cleanup, paste, and play sound effects.
     /// Returns the final text on success, or throws on failure.
     func transcribe(audioFileURL: URL, recordingDuration: TimeInterval) async throws -> String {
