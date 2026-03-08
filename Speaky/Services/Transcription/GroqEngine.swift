@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let logger = Logger(subsystem: "com.bedriyan.speaky", category: "GroqEngine")
+private let logger = Logger.speaky(category: "GroqEngine")
 
 actor GroqEngine: TranscriptionEngine {
     private let apiKey: String

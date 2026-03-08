@@ -11,7 +11,7 @@ extension KeyboardShortcuts.Name {
 @Observable
 @MainActor
 final class HotkeyManager: @unchecked Sendable {
-    private let logger = Logger(subsystem: "com.bedriyan.speaky", category: "HotkeyManager")
+    private let logger = Logger.speaky(category: "HotkeyManager")
 
     enum HotkeyOption: String, CaseIterable, Identifiable {
         case rightOption = "rightOption"

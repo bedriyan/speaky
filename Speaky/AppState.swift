@@ -12,7 +12,7 @@ enum RecordingState: Equatable {
     case error(String)
 }
 
-private let appStateLogger = Logger(subsystem: "com.bedriyan.speaky", category: "AppState")
+private let appStateLogger = Logger.speaky(category: "AppState")
 
 @Observable
 @MainActor

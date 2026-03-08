@@ -2,7 +2,7 @@ import Foundation
 import AVFoundation
 import os
 
-private let logger = Logger(subsystem: "com.bedriyan.speaky", category: "AudioRecorder")
+private let logger = Logger.speaky(category: "AudioRecorder")
 
 final class AudioRecorder: @unchecked Sendable {
     private var audioEngine: AVAudioEngine?
