@@ -38,6 +38,7 @@ enum Constants {
     }
 
     static let keychainService = "speaky"
+    static let groqAPIKeyAccount = "groq-api-key"
 
     enum Groq {
         static let apiURL = URL(string: "https://api.groq.com/openai/v1/audio/transcriptions")!

@@ -1,5 +1,8 @@
 import Foundation
 import SwiftWhisper
+import os
+
+private let logger = Logger.speaky(category: "WhisperEngine")
 
 /// Thread-safe transcription engine using an actor to serialize concurrent calls.
 /// `Whisper` is a non-Sendable third-party type, wrapped in an `@unchecked Sendable`
@@ -19,6 +22,17 @@ actor WhisperEngine: TranscriptionEngine {
 
     func cleanup() {
         box.whisper = nil
+    }
+
+    func warmUp() async throws {
+        guard let whisper = box.whisper else { return }
+        // Run a short silence inference to prime internal caches (KV cache,
+        // Metal shaders, memory pools). Without this, the first real
+        // transcription pays a significant one-time latency penalty.
+        let silence = [Float](repeating: 0, count: 16000)
+        whisper.params.language = .english
+        _ = try? await whisper.transcribe(audioFrames: silence)
+        logger.info("Whisper engine warmed up — inference pipeline primed")
     }
 
     func transcribe(audioFileURL: URL, language: String) async throws -> TranscriptionResult {

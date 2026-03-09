@@ -8,10 +8,8 @@ private let logger = Logger.speaky(category: "PlaybackController")
 /// Only resumes if something was actually playing when we paused.
 final class PlaybackController: @unchecked Sendable {
     private typealias MRSendCommandFunc = @convention(c) (UInt32, AnyObject?) -> Bool
-    private typealias MRGetNowPlayingInfoFunc = @convention(c) (DispatchQueue, @escaping ([String: Any]) -> Void) -> Void
 
     private let sendCommand: MRSendCommandFunc?
-    private let getNowPlayingInfo: MRGetNowPlayingInfoFunc?
     private var didPause = false
 
     private static let kMRPlay: UInt32 = 0
@@ -24,7 +22,6 @@ final class PlaybackController: @unchecked Sendable {
         ) else {
             logger.warning("Failed to load MediaRemote framework")
             sendCommand = nil
-            getNowPlayingInfo = nil
             return
         }
 
@@ -33,46 +30,19 @@ final class PlaybackController: @unchecked Sendable {
         } else {
             sendCommand = nil
         }
-
-        if let ptr = CFBundleGetFunctionPointerForName(bundle, "MRMediaRemoteGetNowPlayingInfo" as CFString) {
-            getNowPlayingInfo = unsafeBitCast(ptr, to: MRGetNowPlayingInfoFunc.self)
-        } else {
-            getNowPlayingInfo = nil
-        }
     }
 
-    /// Pause currently playing media. Only marks didPause if something is actually playing.
+    /// Pause currently playing media immediately without blocking the caller.
+    ///
+    /// Sends the MediaRemote pause command unconditionally. The previous
+    /// implementation used a `DispatchSemaphore` to check NowPlaying info first,
+    /// which blocked the main thread for up to 100ms and — on timeout — skipped
+    /// the pause entirely, causing the multi-second delay users experienced.
     func pause() {
         guard let sendCommand else { return }
-
-        // Check if media is currently playing before sending pause
-        if let getNowPlayingInfo {
-            let semaphore = DispatchSemaphore(value: 0)
-            var isPlaying = false
-
-            getNowPlayingInfo(DispatchQueue.global(qos: .userInitiated)) { info in
-                // kMRMediaRemoteNowPlayingInfoPlaybackRate key = "kMRMediaRemoteNowPlayingInfoPlaybackRate"
-                if let rate = info["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? Double, rate > 0 {
-                    isPlaying = true
-                }
-                semaphore.signal()
-            }
-
-            // Wait briefly — if it times out, skip pause to be safe
-            if semaphore.wait(timeout: .now() + 0.1) == .timedOut {
-                logger.debug("NowPlaying info timed out — skipping pause")
-                return
-            }
-
-            guard isPlaying else {
-                logger.debug("Nothing playing — skipping pause")
-                return
-            }
-        }
-
         _ = sendCommand(Self.kMRPause, nil)
         didPause = true
-        logger.debug("Media paused")
+        logger.debug("Media pause command sent")
     }
 
     /// Resume media only if we actually paused something.

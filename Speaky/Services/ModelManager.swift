@@ -91,44 +91,107 @@ final class ModelManager: @unchecked Sendable {
         modelID.lowercased().contains("v2") ? .v2 : .v3
     }
 
-    private func parakeetDefaultsKey(for modelID: String) -> String {
-        "ParakeetModelDownloaded_\(modelID)"
+    func isParakeetDownloaded(_ model: TranscriptionModelInfo) -> Bool {
+        let version = parakeetVersion(for: model.id)
+        let cacheDir = AsrModels.defaultCacheDirectory(for: version)
+        return AsrModels.modelsExist(at: cacheDir, version: version)
     }
 
-    func isParakeetDownloaded(_ model: TranscriptionModelInfo) -> Bool {
-        UserDefaults.standard.bool(forKey: parakeetDefaultsKey(for: model.id))
-    }
+    /// Current phase of the Parakeet download (observed by onboarding UI).
+    var parakeetDownloadPhase: ParakeetDownloadPhase = .idle
 
     @MainActor
     func downloadParakeetModel(_ model: TranscriptionModelInfo) async throws {
         let version = parakeetVersion(for: model.id)
-        downloadProgress[model.id] = 0
+        let cacheDir = AsrModels.defaultCacheDirectory(for: version)
+        let expectedBytes: Int64 = model.sizeBytes ?? 484_000_000
 
-        // Simulate progress since FluidAudio doesn't expose download progress
-        let progressTask = Task { @MainActor in
-            var progress = 0.0
-            while progress < 0.9 {
-                try await Task.sleep(for: .milliseconds(500))
-                progress += Double.random(in: 0.02...0.08)
-                progress = min(progress, 0.9)
-                self.downloadProgress[model.id] = progress
+        downloadProgress[model.id] = 0
+        parakeetDownloadPhase = .downloading
+
+        // Hybrid progress: real directory monitoring + time-based interpolation.
+        // FluidAudio downloads each file to a system temp dir then atomically moves it,
+        // so the cache dir can go from 0 → 425MB in one instant when the encoder weight
+        // file lands. We smooth this with time-based interpolation during stalls.
+        let modelID = model.id
+        let weakSelf = WeakBox(self)
+        let monitorTask = Task.detached(priority: .utility) {
+            var highWaterMark: Double = 0
+            var stallStartTime = ContinuousClock.now
+            var stallStartProgress: Double = 0
+            var lastSize: Int64 = 0
+
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(400))
+                let currentSize = ModelManager.directorySize(at: cacheDir)
+                let realProgress = min(Double(currentSize) / Double(expectedBytes), 0.99)
+
+                var candidate: Double
+                if currentSize > lastSize {
+                    // Bytes increased — file(s) landed, use real progress
+                    lastSize = currentSize
+                    stallStartTime = .now
+                    stallStartProgress = max(realProgress, highWaterMark)
+                    candidate = realProgress
+                } else {
+                    // No new bytes — large file downloading to system temp.
+                    // Asymptotic curve: ~50% of gap at 60s, ~67% at 120s.
+                    let elapsed = ContinuousClock.now - stallStartTime
+                    let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+                    let target = min(stallStartProgress + 0.45, 0.92)
+                    let gap = target - stallStartProgress
+                    if gap > 0.01 && seconds > 1.0 {
+                        candidate = stallStartProgress + gap * (1.0 - 1.0 / (1.0 + seconds / 50.0))
+                    } else {
+                        candidate = highWaterMark
+                    }
+                }
+
+                // Progress only goes up — never backward
+                highWaterMark = max(highWaterMark, candidate)
+
+                await MainActor.run {
+                    weakSelf.value?.downloadProgress[modelID] = highWaterMark
+                }
             }
         }
 
         do {
-            _ = try await AsrModels.downloadAndLoad(version: version)
-            progressTask.cancel()
+            // Download + compile (AsrModels.download calls DownloadUtils.loadModels
+            // internally which downloads files and compiles CoreML models)
+            _ = try await AsrModels.download(version: version)
+            monitorTask.cancel()
+
+            // Verify model files exist on disk
+            guard AsrModels.modelsExist(at: cacheDir, version: version) else {
+                throw ModelManagerError.downloadFailed("Model files not found after download")
+            }
+
             downloadProgress[model.id] = 1.0
+            parakeetDownloadPhase = .idle
             downloadedModels.insert(model.id)
-            UserDefaults.standard.set(true, forKey: parakeetDefaultsKey(for: model.id))
-            logger.info("Parakeet model \(model.id) downloaded successfully")
+            logger.info("Parakeet model \(model.id) downloaded and compiled successfully")
         } catch {
-            progressTask.cancel()
+            monitorTask.cancel()
             downloadProgress.removeValue(forKey: model.id)
-            UserDefaults.standard.set(false, forKey: parakeetDefaultsKey(for: model.id))
+            parakeetDownloadPhase = .idle
             logger.error("Parakeet download failed: \(error.localizedDescription)")
             throw error
         }
+    }
+
+    private static func directorySize(at url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else {
+            return 0
+        }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                total += Int64(size)
+            }
+        }
+        return total
     }
 
     func deleteParakeetModel(_ model: TranscriptionModelInfo) {
@@ -145,7 +208,6 @@ final class ModelManager: @unchecked Sendable {
 
         downloadedModels.remove(model.id)
         downloadProgress.removeValue(forKey: model.id)
-        UserDefaults.standard.set(false, forKey: parakeetDefaultsKey(for: model.id))
         logger.info("Deleted Parakeet model \(model.id)")
     }
 
@@ -254,6 +316,13 @@ private final class DownloadState: @unchecked Sendable {
 private final class WeakBox<T: AnyObject>: @unchecked Sendable {
     weak var value: T?
     init(_ value: T) { self.value = value }
+}
+
+enum ParakeetDownloadPhase {
+    case idle
+    case downloading
+    case compiling
+    case warmingUp
 }
 
 enum ModelManagerError: LocalizedError {

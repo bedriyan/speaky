@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -eo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="Speaky"
@@ -7,6 +7,7 @@ BUILD_DIR="$PROJECT_DIR/build"
 VERSION=$(grep 'MARKETING_VERSION' "$PROJECT_DIR/project.yml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
 DMGBUILD_SETTINGS="$PROJECT_DIR/.github/dmgbuild-settings.py"
 DMG_BACKGROUND="$PROJECT_DIR/.github/dmg-background.png"
+DOCS_DIR="$PROJECT_DIR/docs"
 
 echo "==> Generating Xcode project..."
 cd "$PROJECT_DIR"
@@ -58,6 +59,79 @@ create_dmg() {
         hdiutil create -volname "$APP_NAME" -srcfolder "$tmpdir" -ov -format UDZO "$dmg_path" 2>&1 | tail -2
         rm -rf "$tmpdir"
     fi
+}
+
+# Helper: find Sparkle tools from SPM checkout
+find_sparkle_tools() {
+    local sparkle_dir
+    sparkle_dir=$(find ~/Library/Developer/Xcode/DerivedData/"$APP_NAME"-*/SourcePackages/artifacts/sparkle \
+        -name "sign_update" -maxdepth 5 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
+    if [ -z "$sparkle_dir" ]; then
+        echo ""
+    else
+        echo "$sparkle_dir"
+    fi
+}
+
+# Helper: sign DMG with Sparkle EdDSA and generate appcast
+sparkle_sign_and_appcast() {
+    local sparkle_tools
+    sparkle_tools=$(find_sparkle_tools)
+    if [ -z "$sparkle_tools" ]; then
+        echo "    WARNING: Sparkle tools not found — skipping EdDSA signing and appcast generation"
+        echo "    (Build the project first so SPM checkouts are available)"
+        return
+    fi
+
+    echo "==> Signing DMGs with Sparkle EdDSA..."
+    local sign_update="$sparkle_tools/sign_update"
+    local generate_appcast="$sparkle_tools/generate_appcast"
+
+    # Create arch-specific staging dirs for appcast generation
+    local arm64_dir="$BUILD_DIR/appcast-arm64"
+    local x86_dir="$BUILD_DIR/appcast-x86_64"
+    rm -rf "$arm64_dir" "$x86_dir"
+    mkdir -p "$arm64_dir" "$x86_dir"
+
+    # Copy and sign arch-specific DMGs
+    local arm64_dmg="$BUILD_DIR/$APP_NAME-$VERSION-Apple-Silicon.dmg"
+    local x86_dmg="$BUILD_DIR/$APP_NAME-$VERSION-Intel.dmg"
+
+    if [ -f "$arm64_dmg" ]; then
+        cp "$arm64_dmg" "$arm64_dir/"
+        echo "    Signing: $(basename "$arm64_dmg")"
+        "$sign_update" "$arm64_dir/$(basename "$arm64_dmg")" 2>&1 | head -1 || true
+    fi
+
+    if [ -f "$x86_dmg" ]; then
+        cp "$x86_dmg" "$x86_dir/"
+        echo "    Signing: $(basename "$x86_dmg")"
+        "$sign_update" "$x86_dir/$(basename "$x86_dmg")" 2>&1 | head -1 || true
+    fi
+
+    echo "==> Generating appcasts..."
+    local download_url_prefix="https://github.com/bedriyan/speaky/releases/download/v$VERSION"
+
+    if [ -f "$arm64_dmg" ]; then
+        "$generate_appcast" --download-url-prefix "$download_url_prefix/" "$arm64_dir" 2>&1 | tail -3 || true
+        if [ -f "$arm64_dir/appcast.xml" ]; then
+            mkdir -p "$DOCS_DIR"
+            cp "$arm64_dir/appcast.xml" "$DOCS_DIR/appcast-arm64.xml"
+            echo "    Created: docs/appcast-arm64.xml"
+        fi
+    fi
+
+    if [ -f "$x86_dmg" ]; then
+        "$generate_appcast" --download-url-prefix "$download_url_prefix/" "$x86_dir" 2>&1 | tail -3 || true
+        if [ -f "$x86_dir/appcast.xml" ]; then
+            mkdir -p "$DOCS_DIR"
+            cp "$x86_dir/appcast.xml" "$DOCS_DIR/appcast-x86_64.xml"
+            echo "    Created: docs/appcast-x86_64.xml"
+        fi
+    fi
+
+    # Cleanup staging
+    rm -rf "$arm64_dir" "$x86_dir"
 }
 
 # Helper: sign and package a single build into a DMG
@@ -133,6 +207,11 @@ case "$BUILD_MODE" in
     package_build ""
     ;;
 esac
+
+# Generate Sparkle appcasts for separate builds
+if [ "$BUILD_MODE" = "separate" ]; then
+    sparkle_sign_and_appcast
+fi
 
 echo ""
 echo "==> Build complete!"

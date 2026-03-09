@@ -10,9 +10,12 @@ struct SettingsView: View {
     @State private var micDenied = false
     @State private var accessibilityGranted = false
     @State private var pollTimer: Timer?
-    @State private var groqAPIKey: String = ""
+    @State private var pollErrorCount = 0
+    @State private var activeObserver: NSObjectProtocol?
+    @State private var groqKeyInput: String = ""
+    @State private var groqKeySaved: Bool = false
+    @State private var isEditingGroqKey: Bool = false
     @State private var showAdvanced = false
-    @State private var showGroqAlert = false
 
     var body: some View {
         @Bindable var settings = appState.settings
@@ -62,23 +65,20 @@ struct SettingsView: View {
                     get: { settings.checkForUpdates },
                     set: { newValue in
                         settings.checkForUpdates = newValue
-                        if newValue {
-                            appState.updateService.startPeriodicChecks()
-                        } else {
-                            appState.updateService.stopPeriodicChecks()
-                        }
+                        appState.updaterManager.setAutomaticChecks(newValue)
                     }
                 ))
                 .contentShape(Rectangle())
                 .onTapGesture {
                     let newValue = !settings.checkForUpdates
                     settings.checkForUpdates = newValue
-                    if newValue {
-                        appState.updateService.startPeriodicChecks()
-                    } else {
-                        appState.updateService.stopPeriodicChecks()
-                    }
+                    appState.updaterManager.setAutomaticChecks(newValue)
                 }
+
+                Button("Check for Updates Now") {
+                    appState.updaterManager.checkForUpdates()
+                }
+                .disabled(!appState.updaterManager.canCheckForUpdates)
             }
 
             // Audio Input
@@ -93,12 +93,18 @@ struct SettingsView: View {
                     }
                 }
 
-                Toggle("Mute system audio while recording", isOn: Binding(
-                    get: { settings.muteSystemAudio },
-                    set: { settings.muteSystemAudio = $0 }
-                ))
-                .contentShape(Rectangle())
-                .onTapGesture { settings.muteSystemAudio.toggle() }
+                Picker("Background audio", selection: Binding(
+                    get: { settings.backgroundAudioMode },
+                    set: { settings.backgroundAudioMode = $0 }
+                )) {
+                    ForEach(BackgroundAudioMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+
+                Text(settings.backgroundAudioMode.description)
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
             }
 
             // Permissions
@@ -208,8 +214,8 @@ struct SettingsView: View {
                     }
                     .padding(.top, 8)
 
-                    // Model list
-                    ForEach(TranscriptionModels.available) { model in
+                    // Model list (Groq handled separately below)
+                    ForEach(TranscriptionModels.available.filter { $0.type != .groq }) { model in
                         modelRow(model)
                     }
 
@@ -227,26 +233,122 @@ struct SettingsView: View {
                     Divider()
                         .padding(.vertical, 4)
 
-                    // Groq API Key
-                    HStack {
-                        Text("Groq API Key")
-                            .font(.subheadline)
-                        Spacer()
-                        SecureField("sk-...", text: $groqAPIKey)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 200)
-                            .onChange(of: groqAPIKey) { _, newValue in
-                                if newValue.isEmpty {
-                                    KeychainHelper.delete(service: Constants.keychainService, account: "groq-api-key")
-                                } else {
-                                    KeychainHelper.save(service: Constants.keychainService, account: "groq-api-key", value: newValue)
+                    // Cloud Transcription
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "cloud.fill")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.amber)
+                            Text("Cloud Transcription")
+                                .font(.subheadline.bold())
+                                .foregroundStyle(Theme.textPrimary)
+                        }
+
+                        // API key states
+                        if groqKeySaved && !isEditingGroqKey {
+                            // Key saved state
+                            HStack {
+                                Label("API key saved", systemImage: "checkmark.circle.fill")
+                                    .font(.subheadline)
+                                    .foregroundStyle(Theme.success)
+                                Spacer()
+                                Button("Edit") {
+                                    groqKeyInput = KeychainHelper.read(service: Constants.keychainService, account: Constants.groqAPIKeyAccount) ?? ""
+                                    isEditingGroqKey = true
+                                }
+                                .font(.caption)
+                                .foregroundStyle(Theme.amber)
+                                .buttonStyle(.handCursor)
+
+                                Button("Remove") {
+                                    KeychainHelper.delete(service: Constants.keychainService, account: Constants.groqAPIKeyAccount)
+                                    groqKeySaved = false
+                                    groqKeyInput = ""
+                                    // Fall back to local model if Groq was selected
+                                    if appState.settings.selectedModelID == "groq-whisper" {
+                                        #if arch(arm64)
+                                        appState.settings.selectedModelID = "parakeet-v3"
+                                        #else
+                                        appState.settings.selectedModelID = "whisper-small-q5_1"
+                                        #endif
+                                    }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.red.opacity(0.7))
+                                .buttonStyle(.handCursor)
+                            }
+                        } else {
+                            // Input state (no key or editing)
+                            HStack(spacing: 8) {
+                                SecureField("gsk_...", text: $groqKeyInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: 220)
+
+                                Button("Save") {
+                                    let trimmed = groqKeyInput.trimmingCharacters(in: .whitespaces)
+                                    guard !trimmed.isEmpty else { return }
+                                    KeychainHelper.save(service: Constants.keychainService, account: Constants.groqAPIKeyAccount, value: trimmed)
+                                    groqKeySaved = true
+                                    isEditingGroqKey = false
+                                }
+                                .font(.caption)
+                                .foregroundStyle(Theme.amber)
+                                .buttonStyle(.handCursor)
+
+                                if isEditingGroqKey {
+                                    Button("Cancel") {
+                                        isEditingGroqKey = false
+                                        groqKeyInput = ""
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.textTertiary)
+                                    .buttonStyle(.handCursor)
                                 }
                             }
-                    }
+                        }
 
-                    Text("Free API key from [groq.com](https://console.groq.com). Required for Groq cloud transcription.")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textTertiary)
+                        // Use Groq button
+                        Button {
+                            appState.settings.selectedModelID = "groq-whisper"
+                        } label: {
+                            HStack(spacing: 6) {
+                                if appState.settings.selectedModelID == "groq-whisper" {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(Theme.success)
+                                        .font(.system(size: 12))
+                                }
+                                Text(appState.settings.selectedModelID == "groq-whisper" ? "Using Groq for transcription" : "Use Groq for transcription")
+                                    .font(.subheadline)
+                            }
+                            .foregroundStyle(groqKeySaved ? Theme.amber : Theme.textTertiary)
+                        }
+                        .buttonStyle(.handCursor)
+                        .disabled(!groqKeySaved)
+
+                        Text("Fast cloud-based transcription with broad multilingual support. Free tier includes ~2 hours/day — no credit card required. Get a free key at [console.groq.com](https://console.groq.com)")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    .padding(.vertical, 4)
+
+                    Divider()
+                        .padding(.vertical, 4)
+
+                    // Memory Management
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("Free model from memory", selection: Binding(
+                            get: { settings.engineUnloadOption },
+                            set: { settings.engineUnloadOption = $0 }
+                        )) {
+                            ForEach(EngineUnloadOption.allCases, id: \.self) { option in
+                                Text(option.label).tag(option)
+                            }
+                        }
+
+                        Text(settings.engineUnloadOption.description)
+                            .font(.caption)
+                            .foregroundStyle(Theme.textTertiary)
+                    }
 
                     Divider()
                         .padding(.vertical, 4)
@@ -274,37 +376,59 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
-        .alert("Groq API Key Required", isPresented: $showGroqAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Add your Groq API key in Settings → Advanced before selecting this model.")
-        }
         .onAppear {
             inputDevices = AudioControlService.inputDevices()
             let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
             micGranted = micStatus == .authorized
             micDenied = micStatus == .denied
             accessibilityGranted = PasteService.checkAccessibility()
-            groqAPIKey = KeychainHelper.read(service: Constants.keychainService, account: "groq-api-key") ?? ""
-            pollTimer = Timer.scheduledTimer(withTimeInterval: Constants.Timing.permissionPollInterval, repeats: true) { _ in
+            groqKeySaved = KeychainHelper.read(service: Constants.keychainService, account: Constants.groqAPIKeyAccount) != nil
+            pollTimer = Timer.scheduledTimer(withTimeInterval: Constants.Timing.permissionPollInterval, repeats: true) { [self] _ in
                 Task { @MainActor in
-                    let newAccessibility = PasteService.checkAccessibility()
-                    if newAccessibility != accessibilityGranted {
-                        accessibilityGranted = newAccessibility
+                    do {
+                        refreshPermissionStatus()
+                        pollErrorCount = 0
+                    } catch {
+                        pollErrorCount += 1
+                        if pollErrorCount >= 3 {
+                            pollTimer?.invalidate()
+                            pollTimer = nil
+                        }
                     }
-                    let newMicStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-                    let newMicGranted = newMicStatus == .authorized
-                    let newMicDenied = newMicStatus == .denied
-                    if newMicGranted != micGranted || newMicDenied != micDenied {
-                        micGranted = newMicGranted
-                        micDenied = newMicDenied
-                    }
+                }
+            }
+            // Instantly refresh when user switches back from System Settings
+            activeObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                Task { @MainActor in
+                    refreshPermissionStatus()
                 }
             }
         }
         .onDisappear {
             pollTimer?.invalidate()
             pollTimer = nil
+            if let observer = activeObserver {
+                NotificationCenter.default.removeObserver(observer)
+                activeObserver = nil
+            }
+        }
+    }
+
+    private func refreshPermissionStatus() {
+        let newAccessibility = PasteService.checkAccessibility()
+        if newAccessibility != accessibilityGranted {
+            accessibilityGranted = newAccessibility
+        }
+        let newMicStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        let newMicGranted = newMicStatus == .authorized
+        let newMicDenied = newMicStatus == .denied
+        if newMicGranted != micGranted || newMicDenied != micDenied {
+            micGranted = newMicGranted
+            micDenied = newMicDenied
         }
     }
 
@@ -392,13 +516,6 @@ struct SettingsView: View {
     // MARK: - Model Actions
 
     private func selectModel(_ model: TranscriptionModelInfo) {
-        if model.type == .groq {
-            let hasKey = KeychainHelper.read(service: Constants.keychainService, account: "groq-api-key")
-            if hasKey == nil || hasKey?.isEmpty == true {
-                showGroqAlert = true
-                return
-            }
-        }
         appState.settings.selectedModelID = model.id
     }
 

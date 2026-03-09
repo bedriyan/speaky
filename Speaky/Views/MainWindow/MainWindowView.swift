@@ -44,9 +44,38 @@ struct MainWindowView: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
 
-                    UpdateBannerView()
-                        .padding(.top, 8)
-                        .animation(.easeInOut(duration: 0.3), value: appState.updateService.hasUpdate)
+                    if let warning = appState.permissionWarning {
+                        PermissionWarningBanner(message: warning) {
+                            showSettings = true
+                        } onDismiss: {
+                            appState.dismissPermissionWarning()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 4)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .animation(.easeInOut(duration: 0.3), value: appState.permissionWarning)
+                    }
+
+                    if let pasteWarning = appState.pasteWarning {
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc.on.clipboard")
+                                .foregroundStyle(Theme.amber)
+                                .font(.system(size: 12))
+                            Text(pasteWarning)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Theme.amber.opacity(0.06))
+                        )
+                        .padding(.horizontal, 20)
+                        .padding(.top, 4)
+                        .transition(.opacity)
+                        .animation(.easeInOut(duration: 0.3), value: appState.pasteWarning)
+                    }
 
                     Spacer()
 
@@ -215,5 +244,54 @@ struct MainWindowView: View {
 
     private var languageLabel: String {
         appState.settings.language == "auto" ? "Auto" : appState.settings.language.capitalized
+    }
+}
+
+// MARK: - Permission Warning Banner
+
+struct PermissionWarningBanner: View {
+    let message: String
+    let onSettings: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Theme.amber)
+                .font(.system(size: 14))
+
+            Text(message)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(2)
+
+            Spacer()
+
+            Button("Fix") {
+                onSettings()
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Theme.amber)
+            .buttonStyle(.handCursor)
+
+            Button {
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            .buttonStyle(.handCursor)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Theme.amber.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Theme.amber.opacity(0.2), lineWidth: 1)
+        )
     }
 }

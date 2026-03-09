@@ -7,10 +7,12 @@ private let logger = Logger.speaky(category: "PasteService")
 final class PasteService: @unchecked Sendable {
 
     /// Paste text at the current cursor position using Cmd+V simulation.
-    func paste(_ text: String) {
+    /// Returns `.pasted` on success, `.clipboardOnly` if accessibility is missing, `.skipped` for empty text.
+    @discardableResult
+    func paste(_ text: String) -> PasteResult {
         guard !text.isEmpty else {
             logger.warning("Paste skipped — empty text")
-            return
+            return .skipped
         }
         logger.info("Paste called — text length: \(text.count) characters")
 
@@ -24,7 +26,7 @@ final class PasteService: @unchecked Sendable {
         // Check accessibility - if not trusted, just leave text on clipboard
         guard AXIsProcessTrusted() else {
             logger.warning("Accessibility not trusted — text copied to clipboard only. Please grant Accessibility in System Settings.")
-            return
+            return .clipboardOnly
         }
 
         // Delay to ensure pasteboard is ready, then simulate Cmd+V on a background queue
@@ -37,9 +39,10 @@ final class PasteService: @unchecked Sendable {
                 self?.restorePasteboard(pasteboard, items: savedItems)
             }
         }
+        return .pasted
     }
 
-    /// Simulate Cmd+V keystroke using CGEvent (VoiceInk approach)
+    /// Simulate Cmd+V keystroke using CGEvent
     private func simulateCmdV() {
         let source = CGEventSource(stateID: .privateState)
 

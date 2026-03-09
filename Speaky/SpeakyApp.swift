@@ -68,11 +68,11 @@ struct ContentRootView: View {
             // Pre-warm the selected engine to avoid cold start delay
             if hasCompletedOnboarding {
                 appState.warmUpEngine()
+                // Check if permissions were revoked since last launch
+                appState.checkPermissionsOnLaunch()
             }
-            // Start auto-update checks
-            if appState.settings.checkForUpdates {
-                appState.updateService.startPeriodicChecks()
-            }
+            // Start Sparkle updater
+            appState.updaterManager.startIfEnabled(checkForUpdates: appState.settings.checkForUpdates)
         }
     }
 }

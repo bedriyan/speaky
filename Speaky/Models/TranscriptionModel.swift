@@ -11,6 +11,7 @@ struct TranscriptionModelInfo: Identifiable, Hashable {
     let name: String
     let type: ModelType
     let size: String?
+    let sizeBytes: Int64?
     let downloadURL: URL?
     let fileName: String?
     let description: String
@@ -19,11 +20,12 @@ struct TranscriptionModelInfo: Identifiable, Hashable {
     let languageSupport: String
     let isRecommended: Bool
 
-    init(id: String, name: String, type: ModelType, size: String?, downloadURL: URL?, fileName: String?, description: String, speedRating: Int, accuracyRating: Int, languageSupport: String, isRecommended: Bool = false) {
+    init(id: String, name: String, type: ModelType, size: String?, sizeBytes: Int64? = nil, downloadURL: URL?, fileName: String?, description: String, speedRating: Int, accuracyRating: Int, languageSupport: String, isRecommended: Bool = false) {
         self.id = id
         self.name = name
         self.type = type
         self.size = size
+        self.sizeBytes = sizeBytes
         self.downloadURL = downloadURL
         self.fileName = fileName
         self.description = description
@@ -45,6 +47,7 @@ enum TranscriptionModels {
             name: "Parakeet V3",
             type: .parakeet,
             size: "~494MB",
+            sizeBytes: 484_000_000,
             downloadURL: nil,
             fileName: nil,
             description: "Fast and accurate on-device model via CoreML. Supports English and 25+ European languages.",

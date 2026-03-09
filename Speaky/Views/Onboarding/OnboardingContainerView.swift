@@ -107,6 +107,7 @@ struct OnboardingPermissionsView: View {
     @State private var micDenied = false
     @State private var accessibilityGranted = false
     @State private var pollTimer: Timer?
+    @State private var pollErrorCount = 0
     @State private var showContent = false
 
     private var allGranted: Bool {
@@ -234,20 +235,30 @@ struct OnboardingPermissionsView: View {
         accessibilityGranted = AXIsProcessTrusted()
     }
 
-    /// Poll both permissions so the UI updates in real-time when user grants from System Settings
+    /// Poll both permissions so the UI updates in real-time when user grants from System Settings.
+    /// Stops after 3 consecutive errors as a safety measure.
     private func startPolling() {
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [self] _ in
             Task { @MainActor in
-                let newMicStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-                let newMicGranted = newMicStatus == .authorized
-                let newMicDenied = newMicStatus == .denied
-                let newAccessibility = AXIsProcessTrusted()
+                do {
+                    let newMicStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+                    let newMicGranted = newMicStatus == .authorized
+                    let newMicDenied = newMicStatus == .denied
+                    let newAccessibility = AXIsProcessTrusted()
 
-                if newMicGranted != micGranted || newMicDenied != micDenied || newAccessibility != accessibilityGranted {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-                        micGranted = newMicGranted
-                        micDenied = newMicDenied
-                        accessibilityGranted = newAccessibility
+                    if newMicGranted != micGranted || newMicDenied != micDenied || newAccessibility != accessibilityGranted {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                            micGranted = newMicGranted
+                            micDenied = newMicDenied
+                            accessibilityGranted = newAccessibility
+                        }
+                    }
+                    pollErrorCount = 0
+                } catch {
+                    pollErrorCount += 1
+                    if pollErrorCount >= 3 {
+                        pollTimer?.invalidate()
+                        pollTimer = nil
                     }
                 }
             }

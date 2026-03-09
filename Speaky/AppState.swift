@@ -3,6 +3,7 @@ import SwiftUI
 import SwiftData
 import DynamicNotchKit
 import AppKit
+import AVFoundation
 import os
 
 enum RecordingState: Equatable {
@@ -23,12 +24,15 @@ final class AppState {
     var recordingStartTime: Date?
     var showingCancelWarning = false
     var showingCelebration = false
+    var permissionWarning: String?
+    var pasteWarning: String?
     private var cancelWarningDismissTask: Task<Void, Never>?
+    private var pasteWarningDismissTask: Task<Void, Never>?
 
     let settings = AppSettings()
     let hotkeyManager = HotkeyManager()
     let modelManager = ModelManager()
-    let updateService = UpdateService()
+    let updaterManager = UpdaterManager()
     private(set) var coordinator: TranscriptionCoordinator!
 
     // SwiftData container for saving transcriptions
@@ -58,9 +62,31 @@ final class AppState {
         }
     }
 
+    /// Check permissions on launch and surface a warning banner if any are revoked.
+    func checkPermissionsOnLaunch() {
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        let accessibilityGranted = AXIsProcessTrusted()
+
+        if micStatus == .denied && !accessibilityGranted {
+            permissionWarning = "Microphone and Accessibility permissions are missing. Go to Settings > Permissions to fix this."
+        } else if micStatus == .denied {
+            permissionWarning = "Microphone access was revoked. Go to Settings > Permissions to restore it."
+        } else if !accessibilityGranted {
+            permissionWarning = "Accessibility access is missing — auto-paste won't work. Go to Settings > Permissions to enable it."
+        } else {
+            permissionWarning = nil
+        }
+    }
+
+    func dismissPermissionWarning() {
+        permissionWarning = nil
+    }
+
     /// Pre-warm the selected engine so first transcription is fast.
+    /// Also starts system wake observation and keep-alive scheduling.
     func warmUpEngine() {
         coordinator.warmUpEngine()
+        coordinator.observeSystemWake()
     }
 
     var menuBarIconName: String {
@@ -90,6 +116,17 @@ final class AppState {
     // MARK: - Recording
 
     private func startRecording() {
+        // Pre-flight: check microphone permission before attempting CoreAudio
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        guard micStatus == .authorized else {
+            let message = micStatus == .denied
+                ? "Microphone access denied. Open System Settings > Privacy > Microphone to grant access."
+                : "Microphone access required. Grant it in Settings > Permissions."
+            appStateLogger.warning("Recording blocked — microphone not authorized (status: \(String(describing: micStatus), privacy: .public))")
+            state = .error(message)
+            return
+        }
+
         do {
             try coordinator.startRecording { [weak self] levels in
                 Task { @MainActor in
@@ -114,8 +151,12 @@ final class AppState {
         } catch {
             appStateLogger.error("Failed to start recording: \(error.localizedDescription, privacy: .public)")
             state = .error("Failed to start recording: \(error.localizedDescription)")
-            coordinator.playbackController.resume()
-            coordinator.audioControl.unmute()
+            if settings.backgroundAudioMode == .muteSystemAudio {
+                coordinator.audioControl.unmute()
+            }
+            if settings.backgroundAudioMode == .pauseMedia {
+                coordinator.playbackController.resume()
+            }
         }
     }
 
@@ -127,8 +168,12 @@ final class AppState {
         } catch {
             appStateLogger.error("Failed to stop recording: \(error.localizedDescription, privacy: .public)")
             state = .error("Failed to stop recording: \(error.localizedDescription)")
-            coordinator.audioControl.unmute()
-            coordinator.playbackController.resume()
+            if settings.backgroundAudioMode == .muteSystemAudio {
+                coordinator.audioControl.unmute()
+            }
+            if settings.backgroundAudioMode == .pauseMedia {
+                coordinator.playbackController.resume()
+            }
             hideNotch()
             return
         }
@@ -164,16 +209,27 @@ final class AppState {
             }
 
             do {
-                let finalText = try await coordinator.transcribe(
+                let pipelineResult = try await coordinator.transcribe(
                     audioFileURL: audioURL,
                     recordingDuration: recordingDuration
                 )
 
-                lastTranscription = finalText
+                lastTranscription = pipelineResult.text
+
+                // Surface accessibility warning if auto-paste fell back to clipboard-only
+                if pipelineResult.pasteResult == .clipboardOnly {
+                    pasteWarning = "Text copied to clipboard. Enable Accessibility in Settings for auto-paste."
+                    pasteWarningDismissTask?.cancel()
+                    pasteWarningDismissTask = Task {
+                        try? await Task.sleep(for: .seconds(5))
+                        guard !Task.isCancelled else { return }
+                        self.pasteWarning = nil
+                    }
+                }
 
                 // Save to SwiftData
                 saveTranscription(
-                    text: finalText,
+                    text: pipelineResult.text,
                     duration: recordingDuration,
                     modelID: selectedModelID,
                     language: selectedLanguage,

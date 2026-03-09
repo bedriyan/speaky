@@ -10,5 +10,11 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Speaky needs microphone access to record speech for transcription.</string>
+	<key>SUFeedURL</key>
+	<string>https://bedriyan.github.io/speaky/appcast-arm64.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>PLACEHOLDER_ED25519_PUBLIC_KEY</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 </dict>
 </plist>

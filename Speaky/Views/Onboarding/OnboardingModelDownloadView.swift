@@ -8,13 +8,17 @@ struct OnboardingModelDownloadView: View {
     @State private var isDownloaded = false
     @State private var downloadError: String?
     @State private var showContent = false
+    @State private var showGroqSetup = false
+    @State private var groqKeyInput: String = ""
+    @State private var groqSaveError: String?
+    @State private var pulseOffset: CGFloat = 0
 
     private let recommendedModel: TranscriptionModelInfo = {
         #if arch(arm64)
         return TranscriptionModels.available.first { $0.id == "parakeet-v3" }
             ?? TranscriptionModels.available[0]
         #else
-        return TranscriptionModels.available.first { $0.id == "whisper-medium-q5_0" }
+        return TranscriptionModels.available.first { $0.id == "whisper-small-q5_1" }
             ?? TranscriptionModels.available[0]
         #endif
     }()
@@ -66,6 +70,7 @@ struct OnboardingModelDownloadView: View {
 
                 if isDownloading {
                     let progress = appState.modelManager.downloadProgress[recommendedModel.id] ?? 0
+                    let phase = appState.modelManager.parakeetDownloadPhase
 
                     VStack(spacing: 6) {
                         GeometryReader { geo in
@@ -73,22 +78,34 @@ struct OnboardingModelDownloadView: View {
                                 RoundedRectangle(cornerRadius: 4)
                                     .fill(Color.white.opacity(0.08))
 
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(Theme.amberGradient)
-                                    .frame(width: geo.size.width * progress)
-                                    .animation(.linear(duration: 0.3), value: progress)
+                                if phase == .warmingUp {
+                                    // Indeterminate pulsing bar for warm-up phase
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Theme.amberGradient)
+                                        .frame(width: geo.size.width * 0.3)
+                                        .offset(x: pulseOffset * (geo.size.width * 0.7))
+                                        .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: pulseOffset)
+                                        .onAppear { pulseOffset = 1.0 }
+                                } else {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Theme.amberGradient)
+                                        .frame(width: geo.size.width * max(progress, 0.02))
+                                        .animation(.easeOut(duration: 0.5), value: progress)
+                                }
                             }
                         }
                         .frame(height: 6)
 
                         HStack {
-                            Text("Downloading...")
+                            Text(phaseLabel(phase))
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.textSecondary)
                             Spacer()
-                            Text("\(Int(progress * 100))%")
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .foregroundStyle(Theme.amber)
+                            if phase != .warmingUp {
+                                Text("\(Int(progress * 100))%")
+                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(Theme.amber)
+                            }
                         }
                     }
                 }
@@ -131,12 +148,13 @@ struct OnboardingModelDownloadView: View {
                 }
                 .buttonStyle(.handCursor)
             } else if isDownloading {
-                Text("Please wait...")
+                let phase = appState.modelManager.parakeetDownloadPhase
+                Text(phase == .warmingUp ? "Almost ready..." : "This may take a minute...")
                     .font(.system(size: 14))
                     .foregroundStyle(Theme.textSecondary)
             }
 
-            if !isDownloading && !isDownloaded {
+            if !isDownloaded {
                 Button(action: onContinue) {
                     Text("Skip for now")
                         .font(.system(size: 14))
@@ -144,9 +162,28 @@ struct OnboardingModelDownloadView: View {
                 }
                 .buttonStyle(.handCursor)
             }
+
+            // Cloud transcription alternative
+            if !isDownloaded {
+                Button {
+                    showGroqSetup = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "cloud.fill")
+                            .font(.system(size: 11))
+                        Text("Or use cloud transcription instead")
+                            .font(.system(size: 13))
+                    }
+                    .foregroundStyle(Theme.textTertiary)
+                }
+                .buttonStyle(.handCursor)
+            }
         }
         .opacity(showContent ? 1 : 0)
         .offset(y: showContent ? 0 : 20)
+        .sheet(isPresented: $showGroqSetup) {
+            groqSetupSheet
+        }
         .onAppear {
             isDownloaded = appState.modelManager.isDownloaded(recommendedModel)
             withAnimation(.easeOut(duration: 0.5)) { showContent = true }
@@ -162,14 +199,139 @@ struct OnboardingModelDownloadView: View {
         }
     }
 
+    private var groqSetupSheet: some View {
+        VStack(spacing: 20) {
+            // Header
+            VStack(spacing: 8) {
+                Image(systemName: "cloud.fill")
+                    .font(.system(size: 32))
+                    .foregroundStyle(Theme.amber)
+
+                Text("Cloud Transcription")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+
+                Text("Use Groq's cloud API for fast transcription without downloading a model.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 340)
+            }
+
+            // How to get a key
+            VStack(alignment: .leading, spacing: 10) {
+                Text("How to get a free API key")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Go to console.groq.com and create an account", systemImage: "1.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textSecondary)
+                    Label("Navigate to API Keys and create a new key", systemImage: "2.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textSecondary)
+                    Label("Copy the key and paste it below", systemImage: "3.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+
+                Button {
+                    if let url = URL(string: "https://console.groq.com") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.system(size: 11))
+                        Text("Open console.groq.com")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(Theme.amber)
+                }
+                .buttonStyle(.handCursor)
+                .padding(.top, 2)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white.opacity(0.04))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            // API key input
+            VStack(spacing: 8) {
+                SecureField("gsk_...", text: $groqKeyInput)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 320)
+
+                if let error = groqSaveError {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.recording)
+                }
+            }
+
+            // Actions
+            HStack(spacing: 12) {
+                Button {
+                    showGroqSetup = false
+                    groqKeyInput = ""
+                    groqSaveError = nil
+                } label: {
+                    Text("Cancel")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Theme.textTertiary)
+                        .frame(width: 100, height: 40)
+                }
+                .buttonStyle(.handCursor)
+
+                Button {
+                    guard !groqKeyInput.trimmingCharacters(in: .whitespaces).isEmpty else {
+                        groqSaveError = "Please enter an API key."
+                        return
+                    }
+                    KeychainHelper.save(service: Constants.keychainService, account: Constants.groqAPIKeyAccount, value: groqKeyInput.trimmingCharacters(in: .whitespaces))
+                    appState.settings.selectedModelID = "groq-whisper"
+                    showGroqSetup = false
+                    groqKeyInput = ""
+                    groqSaveError = nil
+                    onContinue()
+                } label: {
+                    Text("Save & Continue")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.black)
+                        .frame(width: 160, height: 40)
+                        .background(Theme.amberGradient)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.handCursor)
+            }
+
+            Text("Free tier includes ~2 hours of audio per day — no credit card required.")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.textTertiary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(28)
+        .frame(width: 440)
+        .background(Theme.bgDark)
+    }
+
     private func startDownload() {
         isDownloading = true
         downloadError = nil
+        pulseOffset = 0
 
         Task {
             do {
                 if recommendedModel.type == .parakeet {
                     _ = try await appState.modelManager.downloadParakeetModel(recommendedModel)
+
+                    // Phase 3: Warm up the engine (dummy inference to prime ANE)
+                    appState.modelManager.parakeetDownloadPhase = .warmingUp
+                    appState.coordinator.warmUpEngine()
+                    // Give warm-up a moment to run
+                    try? await Task.sleep(for: .seconds(2))
+                    appState.modelManager.parakeetDownloadPhase = .idle
                 } else {
                     guard let url = recommendedModel.downloadURL, let fileName = recommendedModel.fileName else { return }
                     _ = try await appState.modelManager.downloadModel(
@@ -186,6 +348,15 @@ struct OnboardingModelDownloadView: View {
                 isDownloading = false
                 downloadError = error.localizedDescription
             }
+        }
+    }
+
+    private func phaseLabel(_ phase: ParakeetDownloadPhase) -> String {
+        switch phase {
+        case .idle: "Downloading..."
+        case .downloading: "Downloading & preparing..."
+        case .compiling: "Compiling model..."
+        case .warmingUp: "Warming up..."
         }
     }
 }

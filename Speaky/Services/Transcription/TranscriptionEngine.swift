@@ -35,6 +35,6 @@ protocol TranscriptionEngine: AnyObject, Sendable {
 }
 
 extension TranscriptionEngine {
-    // Default no-op for engines that load eagerly (Whisper, Groq)
+    // Default no-op for cloud engines (Groq) that have no local model to prime
     func warmUp() async throws {}
 }

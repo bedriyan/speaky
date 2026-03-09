@@ -24,6 +24,9 @@ packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
     branch: main
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.8.0
 
 targets:
   Speaky:
@@ -44,7 +47,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.bedriyan.speaky
         PRODUCT_NAME: Speaky
-        MARKETING_VERSION: "2.0.3"
+        MARKETING_VERSION: "2.0.4"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "15.0"
@@ -62,6 +65,7 @@ targets:
       - package: KeyboardShortcuts
       - package: DynamicNotchKit
       - package: FluidAudio
+      - package: Sparkle
       - sdk: CoreAudio.framework
       - sdk: AudioToolbox.framework
       - sdk: Security.framework

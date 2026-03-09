@@ -105,7 +105,16 @@ actor ParakeetEngine: TranscriptionEngine {
 
     func warmUp() async throws {
         try await ensureModelsLoaded()
-        logger.info("Parakeet engine warmed up — models loaded and ready")
+
+        // Run a short silence inference to prime the CoreML/ANE pipeline.
+        // Loading models alone isn't enough — the first prediction triggers
+        // device-specific compilation and memory allocation that adds latency.
+        if let manager = asrBox.manager {
+            let silence = [Float](repeating: 0, count: 16000)
+            _ = try? await manager.transcribe(silence)
+        }
+
+        logger.info("Parakeet engine warmed up — inference pipeline primed")
     }
 
     func cleanup() {
