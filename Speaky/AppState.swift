@@ -87,28 +87,27 @@ final class AppState {
     // MARK: - Recording
 
     private func startRecording() {
-        do {
-            state = .recording
-            recordingStartTime = Date()
-            showingCancelWarning = false
-            showingCelebration = false
-            audioLevels = Array(repeating: 0, count: 30)
-
-            try coordinator.startRecording { [weak self] levels in
-                Task { @MainActor in
-                    self?.audioLevels = levels
+        Task {
+            do {
+                try await coordinator.startRecording { [weak self] levels in
+                    Task { @MainActor in
+                        self?.audioLevels = levels
+                    }
                 }
+                state = .recording
+                recordingStartTime = Date()
+                showingCancelWarning = false
+                showingCelebration = false
+                audioLevels = Array(repeating: 0, count: 30)
+                showNotch()
+                Task {
+                    await coordinator.playStartSoundAndMute()
+                }
+            } catch {
+                appStateLogger.error("Failed to start recording: \(error.localizedDescription, privacy: .public)")
+                state = .error("Failed to start recording: \(error.localizedDescription)")
+                coordinator.audioControl.unmute()
             }
-
-            showNotch()
-
-            Task {
-                await coordinator.playStartSoundAndMute()
-            }
-        } catch {
-            appStateLogger.error("Failed to start recording: \(error.localizedDescription, privacy: .public)")
-            state = .error("Failed to start recording: \(error.localizedDescription)")
-            coordinator.audioControl.unmute()
         }
     }
 

@@ -117,17 +117,24 @@ final class TranscriptionCoordinator {
 
     // MARK: - Recording
 
-    func startRecording(onLevelsUpdate: @escaping @Sendable ([Float]) -> Void) throws {
+    /// Starts recording. Runs AVAudioEngine setup off the main thread to avoid blocking the UI
+    /// when CoreAudio/HAL is slow (e.g. device enumeration, permissions).
+    func startRecording(onLevelsUpdate: @escaping @Sendable ([Float]) -> Void) async throws {
         engineUnloadTask?.cancel()
         engineUnloadTask = nil
 
         levelMonitor = AudioLevelMonitor(onLevels: onLevelsUpdate)
-        try audioRecorder.start(deviceID: settings.selectedAudioDevice, levelMonitor: levelMonitor)
+        let deviceID = settings.selectedAudioDevice
+        let monitor = levelMonitor!
 
-        let deviceDesc = settings.selectedAudioDevice.map(String.init) ?? "default"
+        try await Task.detached(priority: .userInitiated) {
+            try audioRecorder.start(deviceID: deviceID, levelMonitor: monitor)
+        }.value
+
+        let deviceDesc = deviceID.map(String.init) ?? "default"
         logger.info("Recording started — device: \(deviceDesc, privacy: .public)")
 
-        if let deviceID = settings.selectedAudioDevice {
+        if let deviceID {
             deviceGuard.lock(to: deviceID)
         }
     }

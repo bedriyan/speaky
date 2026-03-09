@@ -28,15 +28,15 @@ struct TranscriptionCoordinatorTests {
     }
 
     @Test("startRecording calls audio recorder")
-    func startRecordingCallsRecorder() throws {
+    func startRecordingCallsRecorder() async throws {
         let recorder = MockAudioRecorder()
         let (coordinator, _, _, _, _, _) = makeCoordinator(audioRecorder: recorder)
-        try coordinator.startRecording { _ in }
+        try await coordinator.startRecording { _ in }
         #expect(recorder.startCalled)
     }
 
     @Test("startRecording locks device guard when device is selected")
-    func startRecordingLocksDevice() throws {
+    func startRecordingLocksDevice() async throws {
         let guard_ = MockDeviceGuard()
         let settings = AppSettings()
         settings.selectedAudioDevice = 42
@@ -49,7 +49,7 @@ struct TranscriptionCoordinatorTests {
             deviceGuard: guard_,
             soundEffect: MockSoundEffect()
         )
-        try coordinator.startRecording { _ in }
+        try await coordinator.startRecording { _ in }
         #expect(guard_.lockedDeviceID == 42)
     }
 
