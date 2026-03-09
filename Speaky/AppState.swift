@@ -33,6 +33,8 @@ final class AppState {
     let hotkeyManager = HotkeyManager()
     let deviceGuard = DeviceGuard()
     let soundEffect = SoundEffectService()
+    let playbackController = PlaybackController()
+    let updateService = UpdateService()
     private(set) var currentEngine: (any TranscriptionEngine)?
 
     // SwiftData container for saving transcriptions
@@ -109,23 +111,42 @@ final class AppState {
             showingCancelWarning = false
             showingCelebration = false
             audioLevels = Array(repeating: 0, count: 30)
+
+            // Pause background media IMMEDIATELY so the user hears silence right away.
+            // This uses MediaRemote to send a precise pause command — much faster than
+            // system mute, and doesn't affect our own sound effects.
+            if settings.muteSystemAudio {
+                playbackController.pause()
+            }
+
             levelMonitor = AudioLevelMonitor { [weak self] levels in
                 Task { @MainActor in
                     self?.audioLevels = levels
                 }
             }
-            try audioRecorder.start(deviceID: settings.selectedAudioDevice, levelMonitor: levelMonitor)
-            let deviceDesc = settings.selectedAudioDevice.map(String.init) ?? "default"
+
+            // Resolve device ID: when "Auto" (nil), prefer built-in mic to avoid
+            // Bluetooth hijacking the input device when headphones connect.
+            let deviceID: UInt32?
+            if let selected = settings.selectedAudioDevice {
+                deviceID = selected
+            } else {
+                deviceID = AudioControlService.builtInInputDevice()?.id
+            }
+
+            try audioRecorder.start(deviceID: deviceID, levelMonitor: levelMonitor)
+            let deviceDesc = deviceID.map(String.init) ?? "system-default"
             appStateLogger.info("Recording started — device: \(deviceDesc, privacy: .public)")
 
-            // Lock to selected device so Bluetooth changes don't hijack recording
-            if let deviceID = settings.selectedAudioDevice {
+            // Lock to resolved device so Bluetooth changes don't hijack recording
+            if let deviceID {
                 deviceGuard.lock(to: deviceID)
             }
 
             showNotch()
 
-            // Play start sound (if enabled), then mute system audio after it finishes
+            // Play start sound (if enabled), then apply system-level mute after it finishes.
+            // Media is already paused above, so background audio is silent during the sound.
             Task {
                 if settings.soundEffectsEnabled {
                     await soundEffect.playStartAndWait()
@@ -138,6 +159,7 @@ final class AppState {
         } catch {
             appStateLogger.error("Failed to start recording: \(error.localizedDescription, privacy: .public)")
             state = .error("Failed to start recording: \(error.localizedDescription)")
+            playbackController.resume()
             audioControl.unmute()
         }
     }
@@ -152,12 +174,14 @@ final class AppState {
             appStateLogger.error("Failed to stop recording: \(error.localizedDescription, privacy: .public)")
             state = .error("Failed to stop recording: \(error.localizedDescription)")
             audioControl.unmute()
+            playbackController.resume()
             hideNotch()
             return
         }
 
         levelMonitor = nil
         audioControl.unmute()
+        playbackController.resume()
         deviceGuard.unlock()
         state = .transcribing
         audioLevels = Array(repeating: 0, count: 30)
@@ -316,6 +340,7 @@ final class AppState {
 
         levelMonitor = nil
         audioControl.unmute()
+        playbackController.resume()
         deviceGuard.unlock()
         state = .idle
         audioLevels = Array(repeating: 0, count: 30)
@@ -393,6 +418,35 @@ final class AppState {
             guard !Task.isCancelled, let self else { return }
             appStateLogger.info("Auto-unloading engine after \(Int(timeout))s idle")
             await self.unloadCurrentEngine()
+        }
+    }
+
+    // MARK: - Retranscribe
+
+    func retranscribe(_ transcription: Transcription) async throws {
+        guard let audioPath = transcription.audioFileURL else {
+            throw TranscriptionError.engineError("Audio file not available")
+        }
+        let audioURL = URL(fileURLWithPath: audioPath)
+        guard FileManager.default.fileExists(atPath: audioPath) else {
+            throw TranscriptionError.engineError("Audio file no longer exists")
+        }
+
+        let engine = try await resolveEngine()
+        let result = try await engine.transcribe(audioFileURL: audioURL, language: settings.language)
+
+        var finalText = result.text
+        if settings.cleanUpTranscriptions {
+            finalText = TextCleanupService.clean(finalText)
+        }
+
+        transcription.text = finalText
+        transcription.modelID = settings.selectedModel.id
+        transcription.language = settings.language
+        transcription.date = Date()
+
+        if let modelContext {
+            try modelContext.save()
         }
     }
 
