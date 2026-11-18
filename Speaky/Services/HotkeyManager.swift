@@ -120,8 +120,16 @@ final class HotkeyManager: @unchecked Sendable {
         // CGEvent tap captures ESC globally even when other apps consume the key event.
         // NSEvent.addGlobalMonitorForEvents is only an observer and misses consumed events.
         let callback: CGEventTapCallBack = { _, type, event, refcon in
-            // Re-enable tap if it gets disabled by the system
+            // macOS disables a tap whose callback is too slow (e.g. the main
+            // thread was busy). Turn it back on, or ESC-to-cancel stays dead
+            // until the app is restarted.
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let refcon {
+                    let manager = Unmanaged<HotkeyManager>.fromOpaque(refcon).takeUnretainedValue()
+                    if let port = manager.escapeTapPort {
+                        CGEvent.tapEnable(tap: port, enable: true)
+                    }
+                }
                 return Unmanaged.passUnretained(event)
             }
 

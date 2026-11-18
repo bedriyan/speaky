@@ -81,15 +81,16 @@ final class AudioControlService: @unchecked Sendable {
             guard bufferList.mNumberBuffers > 0 else { return nil }
 
             // Get device name
-            var nameSize = UInt32(MemoryLayout<CFString>.size)
+            // The HAL returns a +1 retained CFString; take ownership so it's released.
+            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
             var nameAddress = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyDeviceNameCFString,
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMain
             )
-            var name: CFString = "" as CFString
+            var name: Unmanaged<CFString>?
             AudioObjectGetPropertyData(id, &nameAddress, 0, nil, &nameSize, &name)
-            return AudioDeviceInfo(id: id, name: name as String)
+            return AudioDeviceInfo(id: id, name: (name?.takeRetainedValue() as String?) ?? "")
         }
     }
 }
