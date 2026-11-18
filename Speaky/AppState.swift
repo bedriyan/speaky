@@ -240,6 +240,13 @@ final class AppState {
                 showingCelebration = true
                 coordinator.scheduleEngineUnload()
             } catch {
+                // Cancelled by the user: cancelTranscription() already reset the
+                // state, and a new recording may have started since. Don't touch
+                // state or save a "failed" entry.
+                if error is CancellationError || Task.isCancelled {
+                    appStateLogger.info("Transcription cancelled — discarding")
+                    return
+                }
                 let errorMsg = error.localizedDescription
                 appStateLogger.error("Transcription failed: \(errorMsg, privacy: .public)")
                 state = .error("Transcription failed: \(errorMsg)")

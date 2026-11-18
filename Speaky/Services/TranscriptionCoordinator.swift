@@ -315,6 +315,9 @@ final class TranscriptionCoordinator {
 
         logger.info("Transcription complete — \(finalText.count) characters")
 
+        // Engines don't always stop when cancelled; never paste a cancelled dictation.
+        try Task.checkCancellation()
+
         var pasteResult: PasteResult?
         if settings.autoPaste {
             pasteResult = pasteService.paste(finalText)
@@ -350,6 +353,9 @@ final class TranscriptionCoordinator {
         do {
             return try await performTimedTranscription(engine: engine, audioFileURL: audioFileURL, language: language)
         } catch {
+            // A user cancel is not an engine failure: don't throw away the warm
+            // engine and retry (that made the next dictation a cold start).
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
             logger.warning("Transcription attempt 1 failed: \(error.localizedDescription, privacy: .public). Retrying with fresh engine...")
             await unloadCurrentEngine()
             let freshEngine = try await resolveEngine()
