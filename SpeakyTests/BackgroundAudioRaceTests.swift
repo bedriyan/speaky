@@ -29,7 +29,7 @@ struct BackgroundAudioRaceTests {
         mode: BackgroundAudioMode,
         sound: any SoundEffecting = MockSoundEffect()
     ) -> (TranscriptionCoordinator, MockAudioRecorder, MockAudioControl, MockPlaybackController) {
-        let settings = AppSettings()
+        let settings = AppSettings(defaults: .isolatedForTesting())
         settings.backgroundAudioMode = mode
         settings.soundEffectsEnabled = true
         let recorder = MockAudioRecorder()
