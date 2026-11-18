@@ -38,8 +38,17 @@ final class AppState {
     // SwiftData container for saving transcriptions
     var modelContext: ModelContext?
 
+    /// One overlay for the app's lifetime. DynamicNotchKit instances are never
+    /// deallocated (each one keeps a screen-change observer task alive) and they
+    /// re-create and order front their window on every display change, so
+    /// creating a new one per recording leaked an animating window each time.
     private var notch: DynamicNotch<NotchRecordingView, EmptyView, EmptyView>?
+    /// Serialises expand/hide so a quick stop can't run `hide()` before
+    /// `expand()` and leave the overlay on screen.
+    private var notchTransition: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
+    private var terminationObserver: NSObjectProtocol?
+    private var screenChangeObserver: NSObjectProtocol?
 
     init() {
         coordinator = TranscriptionCoordinator(
@@ -51,6 +60,30 @@ final class AppState {
         }
         hotkeyManager.onEscapePressed = { [weak self] in
             self?.handleEscapePressed()
+        }
+        // A previous run that crashed or was force-quit while muted left the
+        // system output muted; put it back.
+        coordinator.audioControl.recoverFromPreviousSession()
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.coordinator.restoreBackgroundAudioForTermination()
+            }
+        }
+        // DynamicNotchKit re-creates and orders front its window on every display
+        // change, even while hidden. Put it away again when nothing is showing.
+        screenChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(500))
+                self?.orderOutIdleNotchWindow()
+            }
         }
         coordinator.deviceGuard.onDeviceLost = { [weak self] in
             guard let self else { return }
@@ -150,13 +183,8 @@ final class AppState {
 
         } catch {
             appStateLogger.error("Failed to start recording: \(error.localizedDescription, privacy: .public)")
+            // The coordinator already released any background audio it touched.
             state = .error("Failed to start recording: \(error.localizedDescription)")
-            if settings.backgroundAudioMode == .muteSystemAudio {
-                coordinator.audioControl.unmute()
-            }
-            if settings.backgroundAudioMode == .pauseMedia {
-                coordinator.playbackController.resume()
-            }
         }
     }
 
@@ -167,13 +195,8 @@ final class AppState {
             audioURL = try coordinator.stopRecording()
         } catch {
             appStateLogger.error("Failed to stop recording: \(error.localizedDescription, privacy: .public)")
+            // The coordinator restores background audio even when stopping fails.
             state = .error("Failed to stop recording: \(error.localizedDescription)")
-            if settings.backgroundAudioMode == .muteSystemAudio {
-                coordinator.audioControl.unmute()
-            }
-            if settings.backgroundAudioMode == .pauseMedia {
-                coordinator.playbackController.resume()
-            }
             hideNotch()
             return
         }
@@ -188,10 +211,14 @@ final class AppState {
         transcriptionTask = Task {
             defer {
                 // Clean up temp audio file AFTER all retry attempts complete
-                hideNotch()
-                recordingStartTime = nil
-                transcriptionTask = nil
                 try? FileManager.default.removeItem(at: audioURL)
+                // If the user cancelled this transcription and already started a
+                // new recording, the overlay and timer now belong to that one.
+                if !isRecording {
+                    hideNotch()
+                    recordingStartTime = nil
+                    transcriptionTask = nil
+                }
             }
 
             guard !Task.isCancelled else { return }
@@ -279,11 +306,13 @@ final class AppState {
     // MARK: - Notch Overlay
 
     private func showNotch() {
-        let notch = DynamicNotch(style: .auto) { [weak self] in
+        let notch = self.notch ?? DynamicNotch(style: .auto) { [weak self] in
             NotchRecordingView(appState: self)
         }
         self.notch = notch
-        Task {
+        let previous = notchTransition
+        notchTransition = Task {
+            await previous?.value
             await notch.expand()
             // Force dark appearance on the overlay window so it renders dark
             // on all displays regardless of system appearance setting
@@ -291,12 +320,17 @@ final class AppState {
         }
     }
 
+    private func orderOutIdleNotchWindow() {
+        guard !isRecording, !isTranscribing else { return }
+        notch?.windowController?.window?.orderOut(nil)
+    }
+
     private func hideNotch() {
-        if let notch {
-            Task {
-                await notch.hide()
-            }
-            self.notch = nil
+        guard let notch else { return }
+        let previous = notchTransition
+        notchTransition = Task {
+            await previous?.value
+            await notch.hide()
         }
     }
 

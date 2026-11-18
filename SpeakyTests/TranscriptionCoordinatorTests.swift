@@ -131,6 +131,8 @@ struct TranscriptionCoordinatorTests {
             playbackController: playback
         )
 
+        coordinator.settingsForTesting.backgroundAudioMode = .pauseMedia
+        try coordinator.startRecording { _ in }
         _ = try coordinator.stopRecording()
         #expect(control.unmuteCount == 0)
         #expect(guard_.unlockCalled)
@@ -155,6 +157,8 @@ struct TranscriptionCoordinatorTests {
             playbackController: playback
         )
 
+        coordinator.settingsForTesting.backgroundAudioMode = .pauseMedia
+        try coordinator.startRecording { _ in }
         coordinator.cancelRecording()
         #expect(recorder.stopCalled)
         #expect(control.unmuteCount == 0)
@@ -181,6 +185,7 @@ struct TranscriptionCoordinatorTests {
             playbackController: MockPlaybackController()
         )
 
+        try? coordinator.startRecording { _ in }
         await coordinator.playStartSoundAndMute()
         #expect(sound.playStartCalled)
         #expect(control.muteCount == 1)
