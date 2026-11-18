@@ -41,7 +41,7 @@ struct TranscriptionCoordinatorTests {
     func startRecordingLocksDevice() throws {
         let guard_ = MockDeviceGuard()
         let settings = AppSettings(defaults: .isolatedForTesting())
-        settings.selectedAudioDevice = 42
+        settings.selectedAudioDeviceUID = "usb-mic"
         let coordinator = TranscriptionCoordinator(
             settings: settings,
             audioRecorder: MockAudioRecorder(),
@@ -50,7 +50,13 @@ struct TranscriptionCoordinatorTests {
             modelManager: MockModelManager(),
             deviceGuard: guard_,
             soundEffect: MockSoundEffect(),
-            playbackController: MockPlaybackController()
+            playbackController: MockPlaybackController(),
+            inputDevices: {
+                [
+                    .init(id: 7, name: "MacBook Pro Microphone", uid: "builtin", isBuiltIn: true),
+                    .init(id: 42, name: "USB Mic", uid: "usb-mic"),
+                ]
+            }
         )
         try coordinator.startRecording { _ in }
         #expect(guard_.lockedDeviceID == 42)

@@ -84,12 +84,16 @@ struct SettingsView: View {
             // Audio Input
             Section("Audio Input") {
                 Picker("Input Device", selection: Binding(
-                    get: { settings.selectedAudioDevice },
-                    set: { settings.selectedAudioDevice = $0 }
+                    get: { settings.selectedAudioDeviceUID },
+                    set: { settings.selectedAudioDeviceUID = $0 }
                 )) {
-                    Text("Auto (Built-in Mic)").tag(nil as UInt32?)
-                    ForEach(inputDevices) { device in
-                        Text(device.name).tag(device.id as UInt32?)
+                    Text("Auto (Built-in Mic)").tag(nil as String?)
+                    ForEach(inputDevices.filter { !$0.uid.isEmpty }) { device in
+                        Text(device.name).tag(device.uid as String?)
+                    }
+                    if let uid = settings.selectedAudioDeviceUID,
+                       !inputDevices.contains(where: { $0.uid == uid }) {
+                        Text("Selected mic (not connected, using Auto)").tag(uid as String?)
                     }
                 }
 

@@ -88,12 +88,16 @@ final class AppSettings {
     var backgroundAudioMode: BackgroundAudioMode {
         didSet { defaults.set(backgroundAudioMode.rawValue, forKey: "backgroundAudioMode") }
     }
-    var selectedAudioDevice: UInt32? {
+    /// Persistent UID of the chosen microphone; nil means Auto (built-in mic).
+    /// Device ids (`AudioDeviceID`) were stored before, but they change across
+    /// reboots and reconnects, so the saved choice could point at nothing or at
+    /// a different microphone.
+    var selectedAudioDeviceUID: String? {
         didSet {
-            if let device = selectedAudioDevice {
-                defaults.set(device, forKey: "selectedAudioDevice")
+            if let uid = selectedAudioDeviceUID {
+                defaults.set(uid, forKey: "selectedAudioDeviceUID")
             } else {
-                defaults.removeObject(forKey: "selectedAudioDevice")
+                defaults.removeObject(forKey: "selectedAudioDeviceUID")
             }
         }
     }
@@ -126,7 +130,10 @@ final class AppSettings {
         TranscriptionModels.find(selectedModelID) ?? TranscriptionModels.available[0]
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        uidForLegacyDeviceID: (UInt32) -> String? = { AudioControlService.deviceUID($0) }
+    ) {
         self.defaults = defaults
         // Architecture-aware default model
         let defaultModel: String = {
@@ -182,7 +189,17 @@ final class AppSettings {
         self.soundEffectsEnabled = defaults.object(forKey: "soundEffectsEnabled") as? Bool ?? true
         self.checkForUpdates = defaults.object(forKey: "checkForUpdates") as? Bool ?? true
         self.cleanupInterval = defaults.string(forKey: "cleanupInterval") ?? "Never"
-        let deviceVal = defaults.object(forKey: "selectedAudioDevice") as? UInt32
-        self.selectedAudioDevice = deviceVal
+        if let uid = defaults.string(forKey: "selectedAudioDeviceUID") {
+            self.selectedAudioDeviceUID = uid
+        } else if let legacyID = defaults.object(forKey: "selectedAudioDevice") as? UInt32 {
+            // Convert the old runtime id while that device is still the same one.
+            // If it's gone, there's no way to know which mic it was: fall back to Auto.
+            let uid = uidForLegacyDeviceID(legacyID)
+            self.selectedAudioDeviceUID = uid
+            if let uid { defaults.set(uid, forKey: "selectedAudioDeviceUID") }
+        } else {
+            self.selectedAudioDeviceUID = nil
+        }
+        defaults.removeObject(forKey: "selectedAudioDevice")
     }
 }
