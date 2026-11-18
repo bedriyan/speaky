@@ -108,8 +108,11 @@ final class AppState {
         case .recording:
             stopRecordingAndTranscribe()
         case .transcribing:
-            // Allow cancelling a stuck transcription
-            cancelTranscription()
+            // Ignore: pressing the hotkey again a moment too early (e.g. to start
+            // the next sentence) used to cancel this transcription and throw the
+            // dictation away. A stuck transcription can still be cancelled from
+            // the menu bar, and times out on its own.
+            appStateLogger.info("Hotkey pressed while transcribing — ignored")
         }
     }
 

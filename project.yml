@@ -23,7 +23,9 @@ packages:
     from: 1.0.0
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
-    branch: main
+    # Pinned: tracking `main` breaks the build whenever FluidAudio changes its
+    # API (AsrManager.initialize / decoderState). This is main as of the v2.0.4 release.
+    revision: 92a550bdd0c6c3f8be70533f28284a2a15d3b71e
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     from: 2.8.0
