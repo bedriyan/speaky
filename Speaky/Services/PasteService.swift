@@ -36,7 +36,9 @@ final class PasteService: @unchecked Sendable {
 
             // Restore previous clipboard after paste completes
             DispatchQueue.main.asyncAfter(deadline: .now() + Constants.Timing.pasteboardRestoreDelay) { [weak self] in
-                self?.restorePasteboard(pasteboard, items: savedItems)
+                // Re-fetch on the main queue instead of sending the non-Sendable
+                // NSPasteboard across queues (a hard error with newer Swift compilers).
+                self?.restorePasteboard(NSPasteboard.general, items: savedItems)
             }
         }
         return .pasted
