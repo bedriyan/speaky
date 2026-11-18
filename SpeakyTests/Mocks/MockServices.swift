@@ -29,8 +29,10 @@ final class MockAudioRecorder: AudioRecording, @unchecked Sendable {
 final class MockPasteService: Pasting, @unchecked Sendable {
     var pastedTexts: [String] = []
 
-    func paste(_ text: String) {
+    @discardableResult
+    func paste(_ text: String) -> PasteResult {
         pastedTexts.append(text)
+        return .pasted
     }
 }
 
@@ -39,9 +41,16 @@ final class MockPasteService: Pasting, @unchecked Sendable {
 final class MockAudioControl: AudioControlling, @unchecked Sendable {
     var muteCount = 0
     var unmuteCount = 0
+    var restoreAllCount = 0
+    var recoverCount = 0
 
     func mute() { muteCount += 1 }
     func unmute() { unmuteCount += 1 }
+    func restoreAll() { restoreAllCount += 1 }
+    func recoverFromPreviousSession() { recoverCount += 1 }
+
+    /// Net outstanding holds (what would still be muted on a real system).
+    var outstandingHolds: Int { muteCount - unmuteCount }
 }
 
 // MARK: - Mock Device Guard

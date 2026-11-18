@@ -363,6 +363,8 @@ struct SettingsView: View {
                         }
                     }
 
+                    RecoverRecordingsRow()
+
                     Divider()
                         .padding(.vertical, 4)
 
@@ -681,4 +683,49 @@ struct HotkeyRecorderRow: View {
 
 extension Notification.Name {
     static let switchToSettings = Notification.Name("switchToSettings")
+}
+
+// MARK: - Recover recordings missing from history
+
+/// Offers to re-transcribe saved recordings that have no history entry.
+/// Hidden when there is nothing to recover.
+private struct RecoverRecordingsRow: View {
+    @Environment(AppState.self) private var appState
+    @State private var orphanCount = 0
+
+    var body: some View {
+        Group {
+            if let progress = appState.recoveryProgress {
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                    HStack {
+                        Text("Recovering \(progress.done) of \(progress.total)…")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textTertiary)
+                        Spacer()
+                        Button("Stop") { appState.cancelRecovery() }
+                    }
+                }
+            } else if orphanCount > 0 {
+                VStack(alignment: .leading, spacing: 4) {
+                    Button("Recover \(orphanCount) recording\(orphanCount == 1 ? "" : "s") missing from history") {
+                        appState.recoverOrphanedRecordings()
+                    }
+                    .foregroundStyle(Theme.amber)
+                    Text("Re-transcribes saved audio that has no history entry. Audio files are not changed.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            if let result = appState.lastRecoveryResult, appState.recoveryProgress == nil {
+                Text("Recovered \(result.recovered) of \(result.total)" + (result.failed > 0 ? " (\(result.failed) failed)" : ""))
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+            }
+        }
+        .onAppear { orphanCount = appState.orphanedRecordingCount() }
+        .onChange(of: appState.recoveryProgress == nil) { _, idle in
+            if idle { orphanCount = appState.orphanedRecordingCount() }
+        }
+    }
 }
