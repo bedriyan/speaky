@@ -3,11 +3,57 @@ import SwiftData
 
 @main
 struct SpeakyApp: App {
-    @State private var appState = AppState()
+    @State private var appState: AppState
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    private let modelContainer: ModelContainer
 
     init() {
-        Self.resetOnboardingIfFreshInstall()
+        if Self.isRunningAsTestHost {
+            // Unit tests launch the app as their host: never migrate or open
+            // the user's real settings and history from a test run.
+            modelContainer = try! ModelContainer(
+                for: Transcription.self,
+                configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+            )
+        } else {
+            // Must run before anything reads settings (AppSettings, KeyboardShortcuts).
+            LegacyStorageMigration.migrateStandardDefaultsIfNeeded()
+            Self.resetOnboardingIfFreshInstall()
+            modelContainer = Self.makeModelContainer()
+        }
+        _appState = State(initialValue: AppState())
+    }
+
+    private static var isRunningAsTestHost: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
+    /// History lives in Speaky's own folder instead of SwiftData's generic
+    /// `default.store`. Existing history is copied over on first launch.
+    private static func makeModelContainer() -> ModelContainer {
+        let legacyURL = LegacyStorageMigration.legacyHistoryStoreURL
+        let storeURL = LegacyStorageMigration.historyStoreURL
+        let result = LegacyStorageMigration.migrateHistoryStore(from: legacyURL, to: storeURL)
+        if case .failed = result {
+            // Keep using the old store rather than starting with empty history.
+            if let container = try? ModelContainer(
+                for: Transcription.self,
+                configurations: ModelConfiguration(url: legacyURL)
+            ) {
+                return container
+            }
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            return try ModelContainer(for: Transcription.self, configurations: ModelConfiguration(url: storeURL))
+        } catch {
+            // Last resort: the previous default behaviour.
+            return try! ModelContainer(for: Transcription.self)
+        }
     }
 
     var body: some Scene {
@@ -19,7 +65,7 @@ struct SpeakyApp: App {
                     appDelegate.appState = appState
                 }
         }
-        .modelContainer(for: Transcription.self)
+        .modelContainer(modelContainer)
         .defaultSize(width: 440, height: 520)
 
         MenuBarExtra {
