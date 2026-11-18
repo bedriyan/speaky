@@ -21,7 +21,12 @@ struct SpeakyApp: App {
             Self.resetOnboardingIfFreshInstall()
             modelContainer = Self.makeModelContainer()
         }
-        _appState = State(initialValue: AppState())
+        let appState = AppState()
+        // Wire history saving up front. It used to be set only when the main
+        // window appeared, so dictations made in a session where the window
+        // was never opened were pasted but silently left out of history.
+        appState.modelContext = modelContainer.mainContext
+        _appState = State(initialValue: appState)
     }
 
     private static var isRunningAsTestHost: Bool {
