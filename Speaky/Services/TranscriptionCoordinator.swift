@@ -25,6 +25,9 @@ final class TranscriptionCoordinator {
     private var levelMonitor: AudioLevelMonitor?
 
     private let settings: AppSettings
+    #if DEBUG
+    var settingsForTesting: AppSettings { settings }
+    #endif
 
     init(
         settings: AppSettings,
@@ -197,9 +200,22 @@ final class TranscriptionCoordinator {
 
     private var backgroundLoadTask: Task<Void, Never>?
 
+    /// Incremented for every recording, so work that finishes late (the start
+    /// sound) can tell whether the recording it belongs to is still running.
+    private var recordingSessionID: UInt64 = 0
+    private(set) var isRecordingActive = false
+    /// Whether this recording session holds a system mute / paused media.
+    /// Background audio is released based on what was actually done, not on
+    /// the current setting, which the user may change mid-recording.
+    private var sessionHoldsMute = false
+    private var sessionPausedMedia = false
+
     func startRecording(onLevelsUpdate: @escaping @Sendable ([Float]) -> Void) throws {
         engineUnloadTask?.cancel()
         engineUnloadTask = nil
+
+        // A previous session that never stopped cleanly must not keep its holds.
+        releaseBackgroundAudio()
 
         // If the engine isn't loaded, start loading it in the background
         // while recording begins. By the time the user finishes speaking,
@@ -224,6 +240,7 @@ final class TranscriptionCoordinator {
         // affecting media playback — videos keep playing visually, just silenced.
         if settings.backgroundAudioMode == .pauseMedia {
             playbackController.pause()
+            sessionPausedMedia = true
         }
 
         levelMonitor = AudioLevelMonitor(onLevels: onLevelsUpdate)
@@ -237,7 +254,15 @@ final class TranscriptionCoordinator {
             deviceID = AudioControlService.builtInInputDevice()?.id
         }
 
-        try audioRecorder.start(deviceID: deviceID, levelMonitor: levelMonitor)
+        do {
+            try audioRecorder.start(deviceID: deviceID, levelMonitor: levelMonitor)
+        } catch {
+            levelMonitor = nil
+            releaseBackgroundAudio()
+            throw error
+        }
+        recordingSessionID &+= 1
+        isRecordingActive = true
         let deviceDesc = deviceID.map(String.init) ?? "system-default"
         logger.info("Recording started — device: \(deviceDesc, privacy: .public)")
 
@@ -248,45 +273,65 @@ final class TranscriptionCoordinator {
     }
 
     func playStartSoundAndMute() async {
+        let session = recordingSessionID
         if settings.soundEffectsEnabled {
             await soundEffect.playStartAndWait()
         }
+        // The user may have stopped or cancelled while the start sound was
+        // playing. Muting now would happen *after* the unmute and leave the
+        // system muted with nothing left to restore it.
+        guard isRecordingActive, recordingSessionID == session else {
+            logger.info("Recording ended before start sound finished — skipping mute")
+            return
+        }
         // System-level mute — only in muteSystemAudio mode.
         // Mutes system volume so media keeps playing visually but silently.
-        if settings.backgroundAudioMode == .muteSystemAudio {
+        if settings.backgroundAudioMode == .muteSystemAudio, !sessionHoldsMute {
             audioControl.mute()
+            sessionHoldsMute = true
         }
     }
 
     func stopRecording() throws -> URL {
+        defer { endRecordingSession() }
         let url = try audioRecorder.stop()
-        levelMonitor = nil
-        if settings.backgroundAudioMode == .muteSystemAudio {
-            audioControl.unmute()
-        }
-        if settings.backgroundAudioMode == .pauseMedia {
-            playbackController.resume()
-        }
-        deviceGuard.unlock()
         logger.info("Recording stopped — beginning transcription")
         return url
     }
 
     func cancelRecording() {
+        defer { endRecordingSession() }
         do {
             let audioURL = try audioRecorder.stop()
             try? FileManager.default.removeItem(at: audioURL)
         } catch {
             // Ignore — just cleaning up
         }
+    }
+
+    /// Restore every piece of background audio state on app termination.
+    func restoreBackgroundAudioForTermination() {
+        releaseBackgroundAudio()
+        audioControl.restoreAll()
+    }
+
+    private func endRecordingSession() {
+        isRecordingActive = false
         levelMonitor = nil
-        if settings.backgroundAudioMode == .muteSystemAudio {
+        releaseBackgroundAudio()
+        deviceGuard.unlock()
+    }
+
+    /// Undo whatever this session did to background audio. Idempotent.
+    private func releaseBackgroundAudio() {
+        if sessionHoldsMute {
+            sessionHoldsMute = false
             audioControl.unmute()
         }
-        if settings.backgroundAudioMode == .pauseMedia {
+        if sessionPausedMedia {
+            sessionPausedMedia = false
             playbackController.resume()
         }
-        deviceGuard.unlock()
     }
 
     // MARK: - Transcription
