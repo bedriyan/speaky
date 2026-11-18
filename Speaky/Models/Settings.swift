@@ -77,41 +77,47 @@ enum BackgroundAudioMode: String, CaseIterable {
 
 @Observable
 final class AppSettings {
+    @ObservationIgnored private let defaults: UserDefaults
+
     var selectedModelID: String {
-        didSet { UserDefaults.standard.set(selectedModelID, forKey: "selectedModelID") }
+        didSet { defaults.set(selectedModelID, forKey: "selectedModelID") }
     }
     var language: String {
-        didSet { UserDefaults.standard.set(language, forKey: "language") }
+        didSet { defaults.set(language, forKey: "language") }
     }
     var backgroundAudioMode: BackgroundAudioMode {
-        didSet { UserDefaults.standard.set(backgroundAudioMode.rawValue, forKey: "backgroundAudioMode") }
+        didSet { defaults.set(backgroundAudioMode.rawValue, forKey: "backgroundAudioMode") }
     }
-    var selectedAudioDevice: UInt32? {
+    /// Persistent UID of the chosen microphone; nil means Auto (built-in mic).
+    /// Device ids (`AudioDeviceID`) were stored before, but they change across
+    /// reboots and reconnects, so the saved choice could point at nothing or at
+    /// a different microphone.
+    var selectedAudioDeviceUID: String? {
         didSet {
-            if let device = selectedAudioDevice {
-                UserDefaults.standard.set(device, forKey: "selectedAudioDevice")
+            if let uid = selectedAudioDeviceUID {
+                defaults.set(uid, forKey: "selectedAudioDeviceUID")
             } else {
-                UserDefaults.standard.removeObject(forKey: "selectedAudioDevice")
+                defaults.removeObject(forKey: "selectedAudioDeviceUID")
             }
         }
     }
     var autoPaste: Bool {
-        didSet { UserDefaults.standard.set(autoPaste, forKey: "autoPaste") }
+        didSet { defaults.set(autoPaste, forKey: "autoPaste") }
     }
     var cleanUpTranscriptions: Bool {
-        didSet { UserDefaults.standard.set(cleanUpTranscriptions, forKey: "cleanUpTranscriptions") }
+        didSet { defaults.set(cleanUpTranscriptions, forKey: "cleanUpTranscriptions") }
     }
     var autoUnloadTimeout: TimeInterval {
-        didSet { UserDefaults.standard.set(autoUnloadTimeout, forKey: "autoUnloadTimeout") }
+        didSet { defaults.set(autoUnloadTimeout, forKey: "autoUnloadTimeout") }
     }
     var soundEffectsEnabled: Bool {
-        didSet { UserDefaults.standard.set(soundEffectsEnabled, forKey: "soundEffectsEnabled") }
+        didSet { defaults.set(soundEffectsEnabled, forKey: "soundEffectsEnabled") }
     }
     var checkForUpdates: Bool {
-        didSet { UserDefaults.standard.set(checkForUpdates, forKey: "checkForUpdates") }
+        didSet { defaults.set(checkForUpdates, forKey: "checkForUpdates") }
     }
     var cleanupInterval: String {
-        didSet { UserDefaults.standard.set(cleanupInterval, forKey: "cleanupInterval") }
+        didSet { defaults.set(cleanupInterval, forKey: "cleanupInterval") }
     }
     var cleanupIntervalEnum: CleanupInterval {
         CleanupInterval(rawValue: cleanupInterval) ?? .never
@@ -124,7 +130,11 @@ final class AppSettings {
         TranscriptionModels.find(selectedModelID) ?? TranscriptionModels.available[0]
     }
 
-    init() {
+    init(
+        defaults: UserDefaults = .standard,
+        uidForLegacyDeviceID: (UInt32) -> String? = { AudioControlService.deviceUID($0) }
+    ) {
+        self.defaults = defaults
         // Architecture-aware default model
         let defaultModel: String = {
             #if arch(arm64)
@@ -135,7 +145,7 @@ final class AppSettings {
         }()
 
         // Migrate away from removed models (cloud engines, low-quality, incompatible mel bins)
-        let savedModel = UserDefaults.standard.string(forKey: "selectedModelID") ?? defaultModel
+        let savedModel = defaults.string(forKey: "selectedModelID") ?? defaultModel
         let removedModelIDs: Set<String> = [
             "deepgram-nova-3",
             "whisper-large-v3-turbo", "whisper-large-v3"
@@ -151,31 +161,45 @@ final class AppSettings {
 
         if allRemoved.contains(savedModel) {
             self.selectedModelID = defaultModel
-            UserDefaults.standard.set(defaultModel, forKey: "selectedModelID")
+            defaults.set(defaultModel, forKey: "selectedModelID")
         } else {
             self.selectedModelID = savedModel
         }
-        self.language = UserDefaults.standard.string(forKey: "language") ?? "auto"
-        if let savedMode = UserDefaults.standard.string(forKey: "backgroundAudioMode"),
+        self.language = defaults.string(forKey: "language") ?? "auto"
+        if let savedMode = defaults.string(forKey: "backgroundAudioMode"),
            let mode = BackgroundAudioMode(rawValue: savedMode) {
             self.backgroundAudioMode = mode
         } else {
             self.backgroundAudioMode = .pauseMedia
         }
-        self.autoPaste = UserDefaults.standard.object(forKey: "autoPaste") as? Bool ?? true
-        self.cleanUpTranscriptions = UserDefaults.standard.object(forKey: "cleanUpTranscriptions") as? Bool ?? true
+        self.autoPaste = defaults.object(forKey: "autoPaste") as? Bool ?? true
+        self.cleanUpTranscriptions = defaults.object(forKey: "cleanUpTranscriptions") as? Bool ?? true
         // Default: 0 (never unload) — keeps model in memory for instant transcriptions.
         // Migrate users on the old 300s default to "never" since it caused cold-start issues.
-        let savedTimeout = UserDefaults.standard.object(forKey: "autoUnloadTimeout") as? TimeInterval
-        if savedTimeout == 300 || savedTimeout == nil {
+        // This migration runs once; afterwards "5 minutes" is a valid user choice
+        // (it used to be reset to "never" on every launch).
+        let savedTimeout = defaults.object(forKey: "autoUnloadTimeout") as? TimeInterval
+        let migratedKey = "didMigrateLegacyAutoUnloadDefault"
+        if savedTimeout == nil || (savedTimeout == 300 && !defaults.bool(forKey: migratedKey)) {
             self.autoUnloadTimeout = 0
         } else {
             self.autoUnloadTimeout = savedTimeout!
         }
-        self.soundEffectsEnabled = UserDefaults.standard.object(forKey: "soundEffectsEnabled") as? Bool ?? true
-        self.checkForUpdates = UserDefaults.standard.object(forKey: "checkForUpdates") as? Bool ?? true
-        self.cleanupInterval = UserDefaults.standard.string(forKey: "cleanupInterval") ?? "Never"
-        let deviceVal = UserDefaults.standard.object(forKey: "selectedAudioDevice") as? UInt32
-        self.selectedAudioDevice = deviceVal
+        defaults.set(true, forKey: migratedKey)
+        self.soundEffectsEnabled = defaults.object(forKey: "soundEffectsEnabled") as? Bool ?? true
+        self.checkForUpdates = defaults.object(forKey: "checkForUpdates") as? Bool ?? true
+        self.cleanupInterval = defaults.string(forKey: "cleanupInterval") ?? "Never"
+        if let uid = defaults.string(forKey: "selectedAudioDeviceUID") {
+            self.selectedAudioDeviceUID = uid
+        } else if let legacyID = defaults.object(forKey: "selectedAudioDevice") as? UInt32 {
+            // Convert the old runtime id while that device is still the same one.
+            // If it's gone, there's no way to know which mic it was: fall back to Auto.
+            let uid = uidForLegacyDeviceID(legacyID)
+            self.selectedAudioDeviceUID = uid
+            if let uid { defaults.set(uid, forKey: "selectedAudioDeviceUID") }
+        } else {
+            self.selectedAudioDeviceUID = nil
+        }
+        defaults.removeObject(forKey: "selectedAudioDevice")
     }
 }

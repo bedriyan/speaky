@@ -25,6 +25,7 @@ final class TranscriptionCoordinator {
     private var levelMonitor: AudioLevelMonitor?
 
     private let settings: AppSettings
+    private let inputDevices: () -> [AudioControlService.AudioDeviceInfo]
 
     init(
         settings: AppSettings,
@@ -34,9 +35,11 @@ final class TranscriptionCoordinator {
         modelManager: any ModelManaging = ModelManager(),
         deviceGuard: any DeviceGuarding = DeviceGuard(),
         soundEffect: any SoundEffecting = SoundEffectService(),
-        playbackController: any PlaybackControlling = PlaybackController()
+        playbackController: any PlaybackControlling = PlaybackController(),
+        inputDevices: @escaping () -> [AudioControlService.AudioDeviceInfo] = { AudioControlService.inputDevices() }
     ) {
         self.settings = settings
+        self.inputDevices = inputDevices
         self.audioRecorder = audioRecorder
         self.pasteService = pasteService
         self.audioControl = audioControl
@@ -230,12 +233,14 @@ final class TranscriptionCoordinator {
 
         // Resolve device ID: when "Auto" (nil), prefer built-in mic to avoid
         // Bluetooth hijacking the input device when headphones connect.
-        let deviceID: UInt32?
-        if let selected = settings.selectedAudioDevice {
-            deviceID = selected
-        } else {
-            deviceID = AudioControlService.builtInInputDevice()?.id
+        // The selected mic is matched by its persistent UID; if it isn't
+        // connected, fall back to Auto instead of a stale device id.
+        let devices = inputDevices()
+        let resolved = InputDeviceSelection.resolve(selectedUID: settings.selectedAudioDeviceUID, devices: devices)
+        if let uid = settings.selectedAudioDeviceUID, resolved?.uid != uid {
+            logger.warning("Selected microphone is not connected — using \(resolved?.name ?? "system default", privacy: .public)")
         }
+        let deviceID = resolved?.id
 
         try audioRecorder.start(deviceID: deviceID, levelMonitor: levelMonitor)
         let deviceDesc = deviceID.map(String.init) ?? "system-default"
