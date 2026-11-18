@@ -38,6 +38,12 @@ final class AppState {
     // SwiftData container for saving transcriptions
     var modelContext: ModelContext?
 
+    /// Progress of "Recover recordings missing from history", nil when idle.
+    var recoveryProgress: RecordingRecovery.Progress?
+    /// Result of the last finished recovery run, for the Settings footer.
+    var lastRecoveryResult: RecordingRecovery.Progress?
+    private var recoveryTask: Task<Void, Never>?
+
     /// One overlay for the app's lifetime. DynamicNotchKit instances are never
     /// deallocated (each one keeps a screen-change observer task alive) and they
     /// re-create and order front their window on every display change, so
@@ -370,6 +376,53 @@ final class AppState {
         state = .idle
         hideNotch()
         appStateLogger.info("Transcription cancelled by user")
+    }
+
+    // MARK: - Recover recordings missing from history
+
+    /// Recordings on disk that have no history entry.
+    func orphanedRecordingCount() -> Int {
+        guard let modelContext else { return 0 }
+        return (try? RecordingRecovery.orphanedRecordings(in: Constants.recordingsPath, context: modelContext).count) ?? 0
+    }
+
+    func recoverOrphanedRecordings() {
+        guard recoveryTask == nil, let modelContext else { return }
+        let urls: [URL]
+        do {
+            urls = try RecordingRecovery.orphanedRecordings(in: Constants.recordingsPath, context: modelContext)
+        } catch {
+            appStateLogger.warning("Could not list recordings: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        guard !urls.isEmpty else { return }
+        lastRecoveryResult = nil
+        recoveryTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await RecordingRecovery.recover(
+                urls,
+                modelID: settings.selectedModel.id,
+                language: settings.language,
+                context: modelContext,
+                transcribe: { [weak self] url in
+                    // Dictation always wins: wait while the user is recording or transcribing.
+                    while let self, self.isRecording || self.isTranscribing {
+                        try await Task.sleep(for: .milliseconds(500))
+                    }
+                    guard let self else { throw CancellationError() }
+                    return try await self.coordinator.retranscribe(audioFileURL: url)
+                },
+                onProgress: { [weak self] in self?.recoveryProgress = $0 }
+            )
+            self.recoveryProgress = nil
+            self.lastRecoveryResult = result
+            self.recoveryTask = nil
+            self.coordinator.scheduleEngineUnload()
+        }
+    }
+
+    func cancelRecovery() {
+        recoveryTask?.cancel()
     }
 
     // MARK: - Retranscribe
