@@ -47,6 +47,25 @@ final class AudioRecorder: @unchecked Sendable {
         self.levelMonitor = levelMonitor
         lock.unlock()
 
+        do {
+            try startUnit(deviceID: deviceID)
+        } catch {
+            // Don't leave a half-built AudioUnit, buffers or an empty temp file behind.
+            cleanupUnit()
+            freeBuffers()
+            lock.lock()
+            audioFile = nil
+            self.levelMonitor = nil
+            lock.unlock()
+            if let url = outputURL {
+                try? FileManager.default.removeItem(at: url)
+                outputURL = nil
+            }
+            throw error
+        }
+    }
+
+    private func startUnit(deviceID: UInt32?) throws {
         // 1. Create HAL Output AudioUnit (direct hardware access)
         try createAudioUnit()
 
@@ -140,6 +159,7 @@ final class AudioRecorder: @unchecked Sendable {
         let size = attrs[.size] as? UInt64 ?? 0
         guard size > 44 else {
             logger.warning("Recording file too small (\(size) bytes) — treating as empty")
+            try? FileManager.default.removeItem(at: url)
             throw AudioRecorderError.noOutputURL
         }
 
