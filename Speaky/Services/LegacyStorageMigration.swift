@@ -86,6 +86,9 @@ enum LegacyStorageMigration {
             return .failed("cannot open legacy store")
         }
         defer { sqlite3_close(source) }
+        // Another connection (an older Speaky, or SwiftData) may hold a lock for a
+        // moment; wait for it instead of failing the copy straight away.
+        sqlite3_busy_timeout(source, 5_000)
 
         guard hasTable(source, named: "ZTRANSCRIPTION") else { return .notSpeakys }
 
@@ -108,6 +111,7 @@ enum LegacyStorageMigration {
             sqlite3_close(dest)
             return .failed("cannot create new store")
         }
+        sqlite3_busy_timeout(dest, 5_000)
         guard let backup = sqlite3_backup_init(dest, "main", source, "main") else {
             let message = String(cString: sqlite3_errmsg(dest))
             sqlite3_close(dest)
