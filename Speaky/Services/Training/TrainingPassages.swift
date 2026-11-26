@@ -20,7 +20,7 @@ enum TrainingPassages {
         p("email", "Writing an email",
           "Hi team, thank you for the quick reply. I have attached the revised proposal with the changes we discussed on Thursday. Please review the pricing section and let me know if anything looks unclear before we send it to the customer."),
         p("meeting", "Meeting notes",
-          "Action items from today's meeting. The product team will finalise the requirements by Wednesday. Engineering will estimate the effort and flag any risks. Support will prepare a short guide for customers, and we will review progress together next week."),
+          "Action items from today's meeting. The product team will finalize the requirements by Wednesday. Engineering will estimate the effort and flag any risks. Support will prepare a short guide for customers, and we will review progress together next week."),
         p("tech", "Technical update",
           "The deployment failed because the database migration timed out. We rolled back the release, increased the timeout, and added a health check before traffic is switched over. The fix is now in staging and passed all automated tests."),
         p("sounds-1", "Tricky sounds",
@@ -67,7 +67,7 @@ enum TrainingPassages {
     static func practice(_ words: [String]) -> TrainingPassage? {
         guard !words.isEmpty else { return nil }
         return TrainingPassage(
-            id: "practice", title: "Words to practise",
+            id: "practice", title: "Words to practice",
             text: sentences(for: words, offset: 3), kind: .practice
         )
     }

@@ -233,7 +233,7 @@ struct TrainingView: View {
 
     private var yourWordsCard: some View {
         card {
-            sectionTitle("Your words", detail: "Names, products and terms you use. Speaky listens for them and practises them with you.")
+            sectionTitle("Your words", detail: "Names, products and terms you use. Speaky listens for them and practices them with you.")
 
             HStack {
                 TextField("For example: Signit, Kubernetes, Nafath", text: $newWords)
