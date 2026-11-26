@@ -5,6 +5,11 @@ private let logger = Logger.speaky(category: "GroqEngine")
 
 actor GroqEngine: TranscriptionEngine {
     private let apiKey: String
+    private var prompt: String?
+
+    func setVocabulary(_ words: [String]) {
+        prompt = VocabularyPrompt.make(words)
+    }
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -39,6 +44,14 @@ actor GroqEngine: TranscriptionEngine {
             body.append("--\(boundary)\r\n")
             body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
             body.append(language)
+            body.append("\r\n")
+        }
+
+        // Vocabulary hint
+        if let prompt {
+            body.append("--\(boundary)\r\n")
+            body.append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
+            body.append(prompt)
             body.append("\r\n")
         }
 

@@ -34,23 +34,73 @@ final class AppState {
     let modelManager = ModelManager()
     let updaterManager = UpdaterManager()
     private(set) var coordinator: TranscriptionCoordinator!
+    let voiceTrainer: VoiceTrainer
+
+    /// Set while the user is reading a training passage. That recording is handed
+    /// here instead of being pasted or saved to history.
+    private var trainingCapture: ((Result<String, Error>) -> Void)?
+    var isTrainingReading: Bool { trainingCapture != nil }
 
     // SwiftData container for saving transcriptions
     var modelContext: ModelContext?
 
-    private var notch: DynamicNotch<NotchRecordingView, EmptyView, EmptyView>?
-    private var transcriptionTask: Task<Void, Never>?
+    /// Progress of "Recover recordings missing from history", nil when idle.
+    var recoveryProgress: RecordingRecovery.Progress?
+    /// Result of the last finished recovery run, for the Settings footer.
+    var lastRecoveryResult: RecordingRecovery.Progress?
+    private var recoveryTask: Task<Void, Never>?
 
-    init() {
+    /// One overlay for the app's lifetime. DynamicNotchKit instances are never
+    /// deallocated (each one keeps a screen-change observer task alive) and they
+    /// re-create and order front their window on every display change, so
+    /// creating a new one per recording leaked an animating window each time.
+    private var notch: DynamicNotch<NotchRecordingView, EmptyView, EmptyView>?
+    /// Serialises expand/hide so a quick stop can't run `hide()` before
+    /// `expand()` and leave the overlay on screen.
+    private var notchTransition: Task<Void, Never>?
+    private var transcriptionTask: Task<Void, Never>?
+    private var terminationObserver: NSObjectProtocol?
+    private var screenChangeObserver: NSObjectProtocol?
+
+    init(voiceTrainer: VoiceTrainer? = nil) {
         coordinator = TranscriptionCoordinator(
             settings: settings,
             modelManager: modelManager
         )
+        self.voiceTrainer = voiceTrainer ?? VoiceTrainer()
+        self.voiceTrainer.onProfileChange = { [weak self] in
+            self?.refreshVoiceTraining()
+        }
+        refreshVoiceTraining()
         hotkeyManager.onToggleRecording = { [weak self] in
             self?.toggleRecording()
         }
         hotkeyManager.onEscapePressed = { [weak self] in
             self?.handleEscapePressed()
+        }
+        // A previous run that crashed or was force-quit while muted left the
+        // system output muted; put it back.
+        coordinator.audioControl.recoverFromPreviousSession()
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.coordinator.restoreBackgroundAudioForTermination()
+            }
+        }
+        // DynamicNotchKit re-creates and orders front its window on every display
+        // change, even while hidden. Put it away again when nothing is showing.
+        screenChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(500))
+                self?.orderOutIdleNotchWindow()
+            }
         }
         coordinator.deviceGuard.onDeviceLost = { [weak self] in
             guard let self else { return }
@@ -104,12 +154,20 @@ final class AppState {
     func toggleRecording() {
         switch state {
         case .idle, .error:
-            startRecording()
+            // With the training page open and waiting, the hotkey reads the passage.
+            if voiceTrainer.isOpen, voiceTrainer.phase == .ready || voiceTrainer.isFailed {
+                beginTrainingReading()
+            } else {
+                startRecording()
+            }
         case .recording:
             stopRecordingAndTranscribe()
         case .transcribing:
-            // Allow cancelling a stuck transcription
-            cancelTranscription()
+            // Ignore: pressing the hotkey again a moment too early (e.g. to start
+            // the next sentence) used to cancel this transcription and throw the
+            // dictation away. A stuck transcription can still be cancelled from
+            // the menu bar, and times out on its own.
+            appStateLogger.info("Hotkey pressed while transcribing — ignored")
         }
     }
 
@@ -150,13 +208,8 @@ final class AppState {
 
         } catch {
             appStateLogger.error("Failed to start recording: \(error.localizedDescription, privacy: .public)")
+            // The coordinator already released any background audio it touched.
             state = .error("Failed to start recording: \(error.localizedDescription)")
-            if settings.backgroundAudioMode == .muteSystemAudio {
-                coordinator.audioControl.unmute()
-            }
-            if settings.backgroundAudioMode == .pauseMedia {
-                coordinator.playbackController.resume()
-            }
         }
     }
 
@@ -167,14 +220,16 @@ final class AppState {
             audioURL = try coordinator.stopRecording()
         } catch {
             appStateLogger.error("Failed to stop recording: \(error.localizedDescription, privacy: .public)")
+            // The coordinator restores background audio even when stopping fails.
             state = .error("Failed to stop recording: \(error.localizedDescription)")
-            if settings.backgroundAudioMode == .muteSystemAudio {
-                coordinator.audioControl.unmute()
-            }
-            if settings.backgroundAudioMode == .pauseMedia {
-                coordinator.playbackController.resume()
-            }
             hideNotch()
+            finishTrainingCapture(.failure(error))
+            return
+        }
+
+        if trainingCapture != nil {
+            if voiceTrainer.phase == .reading { voiceTrainer.phase = .transcribing }
+            transcribeTrainingReading(audioURL)
             return
         }
 
@@ -188,10 +243,14 @@ final class AppState {
         transcriptionTask = Task {
             defer {
                 // Clean up temp audio file AFTER all retry attempts complete
-                hideNotch()
-                recordingStartTime = nil
-                transcriptionTask = nil
                 try? FileManager.default.removeItem(at: audioURL)
+                // If the user cancelled this transcription and already started a
+                // new recording, the overlay and timer now belong to that one.
+                if !isRecording {
+                    hideNotch()
+                    recordingStartTime = nil
+                    transcriptionTask = nil
+                }
             }
 
             guard !Task.isCancelled else { return }
@@ -240,6 +299,13 @@ final class AppState {
                 showingCelebration = true
                 coordinator.scheduleEngineUnload()
             } catch {
+                // Cancelled by the user: cancelTranscription() already reset the
+                // state, and a new recording may have started since. Don't touch
+                // state or save a "failed" entry.
+                if error is CancellationError || Task.isCancelled {
+                    appStateLogger.info("Transcription cancelled — discarding")
+                    return
+                }
                 let errorMsg = error.localizedDescription
                 appStateLogger.error("Transcription failed: \(errorMsg, privacy: .public)")
                 state = .error("Transcription failed: \(errorMsg)")
@@ -279,11 +345,13 @@ final class AppState {
     // MARK: - Notch Overlay
 
     private func showNotch() {
-        let notch = DynamicNotch(style: .auto) { [weak self] in
+        let notch = self.notch ?? DynamicNotch(style: .auto) { [weak self] in
             NotchRecordingView(appState: self)
         }
         self.notch = notch
-        Task {
+        let previous = notchTransition
+        notchTransition = Task {
+            await previous?.value
             await notch.expand()
             // Force dark appearance on the overlay window so it renders dark
             // on all displays regardless of system appearance setting
@@ -291,12 +359,17 @@ final class AppState {
         }
     }
 
+    private func orderOutIdleNotchWindow() {
+        guard !isRecording, !isTranscribing else { return }
+        notch?.windowController?.window?.orderOut(nil)
+    }
+
     private func hideNotch() {
-        if let notch {
-            Task {
-                await notch.hide()
-            }
-            self.notch = nil
+        guard let notch else { return }
+        let previous = notchTransition
+        notchTransition = Task {
+            await previous?.value
+            await notch.hide()
         }
     }
 
@@ -321,6 +394,7 @@ final class AppState {
     }
 
     func cancelRecording() {
+        finishTrainingCapture(.failure(CancellationError()))
         showingCancelWarning = false
         cancelWarningDismissTask?.cancel()
         coordinator.cancelRecording()
@@ -331,11 +405,160 @@ final class AppState {
     }
 
     func cancelTranscription() {
+        finishTrainingCapture(.failure(CancellationError()))
         transcriptionTask?.cancel()
         transcriptionTask = nil
         state = .idle
         hideNotch()
         appStateLogger.info("Transcription cancelled by user")
+    }
+
+    // MARK: - Voice training
+
+    /// Hand the latest training lessons to the dictation pipeline.
+    func refreshVoiceTraining() {
+        guard settings.useVoiceTraining else {
+            coordinator.applyVoiceTraining(corrector: .none, vocabulary: [])
+            return
+        }
+        let trainer = voiceTrainer
+        coordinator.applyVoiceTraining(
+            corrector: PersonalCorrector(corrections: trainer.learner.activeCorrections(in: trainer.profile)),
+            vocabulary: trainer.learner.vocabulary(for: trainer.profile)
+        )
+    }
+
+    /// Read the current training passage: record, transcribe, and let the trainer learn.
+    func beginTrainingReading() {
+        let trainer = voiceTrainer
+        trainer.readAgain()
+        trainer.phase = .reading
+        let started = startTrainingReading { result in
+            switch result {
+            case .success(let heard):
+                if heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    trainer.readingFailed("Speaky didn't hear anything. Check your microphone and try again.")
+                } else {
+                    trainer.finishReading(heard: heard)
+                }
+            case .failure(let error):
+                if error is CancellationError {
+                    trainer.readAgain()
+                } else {
+                    trainer.readingFailed(error.localizedDescription)
+                }
+            }
+        }
+        if !started, trainer.phase == .reading { trainer.readingFailed("Could not start recording") }
+    }
+
+    /// Stop recording the passage; the trainer moves to `.transcribing`.
+    func endTrainingReading() {
+        guard isTrainingReading, isRecording else { return }
+        voiceTrainer.phase = .transcribing
+        finishTrainingReading()
+    }
+
+    /// Start recording a training reading. The result goes to `onResult`, never to
+    /// the paste pipeline or history. Returns false if recording couldn't start.
+    @discardableResult
+    func startTrainingReading(onResult: @escaping (Result<String, Error>) -> Void) -> Bool {
+        guard !isRecording, !isTranscribing, trainingCapture == nil else { return false }
+        trainingCapture = onResult
+        startRecording()
+        guard isRecording else {
+            let message: String
+            if case .error(let text) = state { message = text } else { message = "Could not start recording" }
+            finishTrainingCapture(.failure(TranscriptionError.engineError(message)))
+            return false
+        }
+        return true
+    }
+
+    /// Stop the training reading and transcribe it.
+    func finishTrainingReading() {
+        guard isRecording, trainingCapture != nil else { return }
+        stopRecordingAndTranscribe()
+    }
+
+    private func finishTrainingCapture(_ result: Result<String, Error>) {
+        guard let capture = trainingCapture else { return }
+        trainingCapture = nil
+        capture(result)
+    }
+
+    private func transcribeTrainingReading(_ audioURL: URL) {
+        state = .transcribing
+        audioLevels = Array(repeating: 0, count: 30)
+        transcriptionTask = Task {
+            defer {
+                try? FileManager.default.removeItem(at: audioURL)
+                if !isRecording {
+                    hideNotch()
+                    recordingStartTime = nil
+                    transcriptionTask = nil
+                }
+            }
+            do {
+                let text = try await coordinator.transcribeForTraining(audioFileURL: audioURL)
+                try Task.checkCancellation()
+                state = .idle
+                finishTrainingCapture(.success(text))
+            } catch {
+                if error is CancellationError || Task.isCancelled { return }
+                appStateLogger.error("Training transcription failed: \(error.localizedDescription, privacy: .public)")
+                state = .idle
+                finishTrainingCapture(.failure(error))
+            }
+            coordinator.scheduleEngineUnload()
+        }
+    }
+
+    // MARK: - Recover recordings missing from history
+
+    /// Recordings on disk that have no history entry.
+    func orphanedRecordingCount() -> Int {
+        guard let modelContext else { return 0 }
+        return (try? RecordingRecovery.orphanedRecordings(in: Constants.recordingsPath, context: modelContext).count) ?? 0
+    }
+
+    func recoverOrphanedRecordings() {
+        guard recoveryTask == nil, let modelContext else { return }
+        let urls: [URL]
+        do {
+            urls = try RecordingRecovery.orphanedRecordings(in: Constants.recordingsPath, context: modelContext)
+        } catch {
+            appStateLogger.warning("Could not list recordings: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        guard !urls.isEmpty else { return }
+        lastRecoveryResult = nil
+        recoveryTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await RecordingRecovery.recover(
+                urls,
+                modelID: settings.selectedModel.id,
+                language: settings.language,
+                context: modelContext,
+                transcribe: { [weak self] url in
+                    // Dictation always wins: wait while the user is recording or transcribing.
+                    while let self, self.isRecording || self.isTranscribing {
+                        try await Task.sleep(for: .milliseconds(500))
+                    }
+                    guard let self else { throw CancellationError() }
+                    return try await self.coordinator.retranscribe(audioFileURL: url)
+                },
+                onProgress: { [weak self] in self?.recoveryProgress = $0 }
+            )
+            self.recoveryProgress = nil
+            self.lastRecoveryResult = result
+            self.recoveryTask = nil
+            self.coordinator.scheduleEngineUnload()
+        }
+    }
+
+    func cancelRecovery() {
+        recoveryTask?.cancel()
     }
 
     // MARK: - Retranscribe

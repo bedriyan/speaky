@@ -2,8 +2,6 @@ import SwiftUI
 
 struct NotchRecordingView: View {
     var appState: AppState?
-    @State private var elapsedTime: TimeInterval = 0
-    @State private var timer: Timer?
 
 
     var body: some View {
@@ -40,7 +38,7 @@ struct NotchRecordingView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .transition(.opacity)
-                } else {
+                } else if appState.isRecording {
                     // Recording — wide bar, Speaky left, all controls single row right
                     HStack(spacing: 0) {
                         // Speaky centered in clip area
@@ -55,10 +53,13 @@ struct NotchRecordingView: View {
 
                         Spacer().frame(width: 12)
 
-                        // Timer
-                        Text(formatTime(elapsedTime))
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundStyle(Theme.amber.opacity(0.9))
+                        // Timer — derived from the recording start time, so it
+                        // only ticks while this view is actually showing a recording.
+                        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                            Text(formatTime(context.date.timeIntervalSince(appState.recordingStartTime ?? context.date)))
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Theme.amber.opacity(0.9))
+                        }
 
                         Spacer().frame(width: 12)
 
@@ -84,21 +85,14 @@ struct NotchRecordingView: View {
             }
 
         }
+        // When idle or in an error state the overlay is hidden and renders
+        // nothing, so no animation or timer keeps running in the background
+        // (DynamicNotchKit keeps the hidden content view alive).
         .preferredColorScheme(.dark)
-        .onAppear {
-            timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-                Task { @MainActor in
-                    elapsedTime += 0.1
-                }
-            }
-        }
-        .onDisappear {
-            timer?.invalidate()
-            timer = nil
-        }
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {
+        let seconds = max(0, seconds)
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
         return String(format: "%d:%02d", mins, secs)

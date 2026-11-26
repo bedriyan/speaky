@@ -10,6 +10,10 @@ private let logger = Logger.speaky(category: "WhisperEngine")
 actor WhisperEngine: TranscriptionEngine {
     private final class WhisperBox: @unchecked Sendable {
         var whisper: Whisper?
+        /// Owned C string for `initial_prompt`; whisper.cpp only borrows it.
+        var prompt: UnsafeMutablePointer<CChar>?
+
+        deinit { free(prompt) }
     }
 
     private let box = WhisperBox()
@@ -18,10 +22,21 @@ actor WhisperEngine: TranscriptionEngine {
         box.whisper = nil
         let url = URL(fileURLWithPath: path)
         box.whisper = Whisper(fromFileURL: url)
+        applyPrompt()
     }
 
     func cleanup() {
         box.whisper = nil
+    }
+
+    func setVocabulary(_ words: [String]) {
+        free(box.prompt)
+        box.prompt = VocabularyPrompt.make(words).flatMap { strdup($0) }
+        applyPrompt()
+    }
+
+    private func applyPrompt() {
+        box.whisper?.params.initial_prompt = box.prompt.map { UnsafePointer($0) }
     }
 
     func warmUp() async throws {

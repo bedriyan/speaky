@@ -84,12 +84,16 @@ struct SettingsView: View {
             // Audio Input
             Section("Audio Input") {
                 Picker("Input Device", selection: Binding(
-                    get: { settings.selectedAudioDevice },
-                    set: { settings.selectedAudioDevice = $0 }
+                    get: { settings.selectedAudioDeviceUID },
+                    set: { settings.selectedAudioDeviceUID = $0 }
                 )) {
-                    Text("Auto (Built-in Mic)").tag(nil as UInt32?)
-                    ForEach(inputDevices) { device in
-                        Text(device.name).tag(device.id as UInt32?)
+                    Text("Auto (Built-in Mic)").tag(nil as String?)
+                    ForEach(inputDevices.filter { !$0.uid.isEmpty }) { device in
+                        Text(device.name).tag(device.uid as String?)
+                    }
+                    if let uid = settings.selectedAudioDeviceUID,
+                       !inputDevices.contains(where: { $0.uid == uid }) {
+                        Text("Selected mic (not connected, using Auto)").tag(uid as String?)
                     }
                 }
 
@@ -362,6 +366,8 @@ struct SettingsView: View {
                             Text(interval.rawValue).tag(interval)
                         }
                     }
+
+                    RecoverRecordingsRow()
 
                     Divider()
                         .padding(.vertical, 4)
@@ -681,4 +687,49 @@ struct HotkeyRecorderRow: View {
 
 extension Notification.Name {
     static let switchToSettings = Notification.Name("switchToSettings")
+}
+
+// MARK: - Recover recordings missing from history
+
+/// Offers to re-transcribe saved recordings that have no history entry.
+/// Hidden when there is nothing to recover.
+private struct RecoverRecordingsRow: View {
+    @Environment(AppState.self) private var appState
+    @State private var orphanCount = 0
+
+    var body: some View {
+        Group {
+            if let progress = appState.recoveryProgress {
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                    HStack {
+                        Text("Recovering \(progress.done) of \(progress.total)…")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textTertiary)
+                        Spacer()
+                        Button("Stop") { appState.cancelRecovery() }
+                    }
+                }
+            } else if orphanCount > 0 {
+                VStack(alignment: .leading, spacing: 4) {
+                    Button("Recover \(orphanCount) recording\(orphanCount == 1 ? "" : "s") missing from history") {
+                        appState.recoverOrphanedRecordings()
+                    }
+                    .foregroundStyle(Theme.amber)
+                    Text("Re-transcribes saved audio that has no history entry. Audio files are not changed.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            if let result = appState.lastRecoveryResult, appState.recoveryProgress == nil {
+                Text("Recovered \(result.recovered) of \(result.total)" + (result.failed > 0 ? " (\(result.failed) failed)" : ""))
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+            }
+        }
+        .onAppear { orphanCount = appState.orphanedRecordingCount() }
+        .onChange(of: appState.recoveryProgress == nil) { _, idle in
+            if idle { orphanCount = appState.orphanedRecordingCount() }
+        }
+    }
 }

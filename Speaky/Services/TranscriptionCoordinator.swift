@@ -24,7 +24,16 @@ final class TranscriptionCoordinator {
     private var engineUnloadTask: Task<Void, Never>?
     private var levelMonitor: AudioLevelMonitor?
 
+    /// Corrections learned in voice training, applied to every dictation.
+    private(set) var personalCorrector = PersonalCorrector.none
+    /// The user's words, passed to the engine as a recognition hint.
+    private(set) var vocabulary: [String] = []
+
     private let settings: AppSettings
+    private let inputDevices: () -> [AudioControlService.AudioDeviceInfo]
+    #if DEBUG
+    var settingsForTesting: AppSettings { settings }
+    #endif
 
     init(
         settings: AppSettings,
@@ -34,9 +43,11 @@ final class TranscriptionCoordinator {
         modelManager: any ModelManaging = ModelManager(),
         deviceGuard: any DeviceGuarding = DeviceGuard(),
         soundEffect: any SoundEffecting = SoundEffectService(),
-        playbackController: any PlaybackControlling = PlaybackController()
+        playbackController: any PlaybackControlling = PlaybackController(),
+        inputDevices: @escaping () -> [AudioControlService.AudioDeviceInfo] = { AudioControlService.inputDevices() }
     ) {
         self.settings = settings
+        self.inputDevices = inputDevices
         self.audioRecorder = audioRecorder
         self.pasteService = pasteService
         self.audioControl = audioControl
@@ -160,9 +171,34 @@ final class TranscriptionCoordinator {
             engine = GroqEngine(apiKey: apiKey)
         }
 
+        await engine.setVocabulary(vocabulary)
         currentEngine = engine
         currentEngineModelID = model.id
         return engine
+    }
+
+    // MARK: - Voice training
+
+    /// Use what voice training learned. Called at launch and whenever the profile changes.
+    func applyVoiceTraining(corrector: PersonalCorrector, vocabulary: [String]) {
+        personalCorrector = corrector
+        guard vocabulary != self.vocabulary else { return }
+        self.vocabulary = vocabulary
+        if let engine = currentEngine {
+            Task { await engine.setVocabulary(vocabulary) }
+        }
+    }
+
+    /// Transcribe a training reading exactly as the engine hears it: no learned
+    /// corrections, no cleanup, no paste.
+    func transcribeForTraining(audioFileURL: URL) async throws -> String {
+        let engine = try await resolveEngine()
+        let result = try await transcribeWithResilience(
+            engine: engine,
+            audioFileURL: audioFileURL,
+            language: settings.language
+        )
+        return result.text
     }
 
     func unloadCurrentEngine() async {
@@ -197,9 +233,22 @@ final class TranscriptionCoordinator {
 
     private var backgroundLoadTask: Task<Void, Never>?
 
+    /// Incremented for every recording, so work that finishes late (the start
+    /// sound) can tell whether the recording it belongs to is still running.
+    private var recordingSessionID: UInt64 = 0
+    private(set) var isRecordingActive = false
+    /// Whether this recording session holds a system mute / paused media.
+    /// Background audio is released based on what was actually done, not on
+    /// the current setting, which the user may change mid-recording.
+    private var sessionHoldsMute = false
+    private var sessionPausedMedia = false
+
     func startRecording(onLevelsUpdate: @escaping @Sendable ([Float]) -> Void) throws {
         engineUnloadTask?.cancel()
         engineUnloadTask = nil
+
+        // A previous session that never stopped cleanly must not keep its holds.
+        releaseBackgroundAudio()
 
         // If the engine isn't loaded, start loading it in the background
         // while recording begins. By the time the user finishes speaking,
@@ -224,20 +273,31 @@ final class TranscriptionCoordinator {
         // affecting media playback — videos keep playing visually, just silenced.
         if settings.backgroundAudioMode == .pauseMedia {
             playbackController.pause()
+            sessionPausedMedia = true
         }
 
         levelMonitor = AudioLevelMonitor(onLevels: onLevelsUpdate)
 
         // Resolve device ID: when "Auto" (nil), prefer built-in mic to avoid
         // Bluetooth hijacking the input device when headphones connect.
-        let deviceID: UInt32?
-        if let selected = settings.selectedAudioDevice {
-            deviceID = selected
-        } else {
-            deviceID = AudioControlService.builtInInputDevice()?.id
+        // The selected mic is matched by its persistent UID; if it isn't
+        // connected, fall back to Auto instead of a stale device id.
+        let devices = inputDevices()
+        let resolved = InputDeviceSelection.resolve(selectedUID: settings.selectedAudioDeviceUID, devices: devices)
+        if let uid = settings.selectedAudioDeviceUID, resolved?.uid != uid {
+            logger.warning("Selected microphone is not connected — using \(resolved?.name ?? "system default", privacy: .public)")
         }
+        let deviceID = resolved?.id
 
-        try audioRecorder.start(deviceID: deviceID, levelMonitor: levelMonitor)
+        do {
+            try audioRecorder.start(deviceID: deviceID, levelMonitor: levelMonitor)
+        } catch {
+            levelMonitor = nil
+            releaseBackgroundAudio()
+            throw error
+        }
+        recordingSessionID &+= 1
+        isRecordingActive = true
         let deviceDesc = deviceID.map(String.init) ?? "system-default"
         logger.info("Recording started — device: \(deviceDesc, privacy: .public)")
 
@@ -248,45 +308,65 @@ final class TranscriptionCoordinator {
     }
 
     func playStartSoundAndMute() async {
+        let session = recordingSessionID
         if settings.soundEffectsEnabled {
             await soundEffect.playStartAndWait()
         }
+        // The user may have stopped or cancelled while the start sound was
+        // playing. Muting now would happen *after* the unmute and leave the
+        // system muted with nothing left to restore it.
+        guard isRecordingActive, recordingSessionID == session else {
+            logger.info("Recording ended before start sound finished — skipping mute")
+            return
+        }
         // System-level mute — only in muteSystemAudio mode.
         // Mutes system volume so media keeps playing visually but silently.
-        if settings.backgroundAudioMode == .muteSystemAudio {
+        if settings.backgroundAudioMode == .muteSystemAudio, !sessionHoldsMute {
             audioControl.mute()
+            sessionHoldsMute = true
         }
     }
 
     func stopRecording() throws -> URL {
+        defer { endRecordingSession() }
         let url = try audioRecorder.stop()
-        levelMonitor = nil
-        if settings.backgroundAudioMode == .muteSystemAudio {
-            audioControl.unmute()
-        }
-        if settings.backgroundAudioMode == .pauseMedia {
-            playbackController.resume()
-        }
-        deviceGuard.unlock()
         logger.info("Recording stopped — beginning transcription")
         return url
     }
 
     func cancelRecording() {
+        defer { endRecordingSession() }
         do {
             let audioURL = try audioRecorder.stop()
             try? FileManager.default.removeItem(at: audioURL)
         } catch {
             // Ignore — just cleaning up
         }
+    }
+
+    /// Restore every piece of background audio state on app termination.
+    func restoreBackgroundAudioForTermination() {
+        releaseBackgroundAudio()
+        audioControl.restoreAll()
+    }
+
+    private func endRecordingSession() {
+        isRecordingActive = false
         levelMonitor = nil
-        if settings.backgroundAudioMode == .muteSystemAudio {
+        releaseBackgroundAudio()
+        deviceGuard.unlock()
+    }
+
+    /// Undo whatever this session did to background audio. Idempotent.
+    private func releaseBackgroundAudio() {
+        if sessionHoldsMute {
+            sessionHoldsMute = false
             audioControl.unmute()
         }
-        if settings.backgroundAudioMode == .pauseMedia {
+        if sessionPausedMedia {
+            sessionPausedMedia = false
             playbackController.resume()
         }
-        deviceGuard.unlock()
     }
 
     // MARK: - Transcription
@@ -308,12 +388,15 @@ final class TranscriptionCoordinator {
             language: settings.language
         )
 
-        var finalText = result.text
+        var finalText = personalCorrector.apply(result.text)
         if settings.cleanUpTranscriptions {
             finalText = TextCleanupService.clean(finalText)
         }
 
         logger.info("Transcription complete — \(finalText.count) characters")
+
+        // Engines don't always stop when cancelled; never paste a cancelled dictation.
+        try Task.checkCancellation()
 
         var pasteResult: PasteResult?
         if settings.autoPaste {
@@ -332,7 +415,7 @@ final class TranscriptionCoordinator {
         let engine = try await resolveEngine()
         let result = try await engine.transcribe(audioFileURL: audioFileURL, language: settings.language)
 
-        var finalText = result.text
+        var finalText = personalCorrector.apply(result.text)
         if settings.cleanUpTranscriptions {
             finalText = TextCleanupService.clean(finalText)
         }
@@ -350,6 +433,9 @@ final class TranscriptionCoordinator {
         do {
             return try await performTimedTranscription(engine: engine, audioFileURL: audioFileURL, language: language)
         } catch {
+            // A user cancel is not an engine failure: don't throw away the warm
+            // engine and retry (that made the next dictation a cold start).
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
             logger.warning("Transcription attempt 1 failed: \(error.localizedDescription, privacy: .public). Retrying with fresh engine...")
             await unloadCurrentEngine()
             let freshEngine = try await resolveEngine()
