@@ -104,6 +104,11 @@ final class AppSettings {
     var autoPaste: Bool {
         didSet { defaults.set(autoPaste, forKey: "autoPaste") }
     }
+    /// Apply what voice training learned (corrections and word hints) to dictation.
+    var useVoiceTraining: Bool {
+        didSet { defaults.set(useVoiceTraining, forKey: "useVoiceTraining") }
+    }
+
     var cleanUpTranscriptions: Bool {
         didSet { defaults.set(cleanUpTranscriptions, forKey: "cleanUpTranscriptions") }
     }
@@ -174,6 +179,7 @@ final class AppSettings {
         }
         self.autoPaste = defaults.object(forKey: "autoPaste") as? Bool ?? true
         self.cleanUpTranscriptions = defaults.object(forKey: "cleanUpTranscriptions") as? Bool ?? true
+        self.useVoiceTraining = defaults.object(forKey: "useVoiceTraining") as? Bool ?? true
         // Default: 0 (never unload) — keeps model in memory for instant transcriptions.
         // Migrate users on the old 300s default to "never" since it caused cold-start issues.
         // This migration runs once; afterwards "5 minutes" is a valid user choice

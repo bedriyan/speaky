@@ -26,6 +26,12 @@ actor ParakeetEngine: TranscriptionEngine {
     private let modelsBox = ModelsBox()
     private let version: AsrModelVersion
 
+    /// Words to boost with FluidAudio's CTC vocabulary rescoring.
+    private var vocabulary: [String] = []
+    /// Vocabulary currently configured on the manager, so it isn't rebuilt needlessly.
+    private var configuredVocabulary: [String] = []
+    private var ctcDownload: Task<Void, Never>?
+
     init(version: AsrModelVersion = .v3) {
         self.version = version
     }
@@ -69,10 +75,18 @@ actor ParakeetEngine: TranscriptionEngine {
 
         logger.info("Transcribing \(speechAudio.count) samples (\(String(format: "%.1f", Double(speechAudio.count) / 16000.0))s)")
         let result = try await asrManager.transcribe(speechAudio)
-        logger.info("Transcription result: \(result.text.count) chars — \"\(result.text.prefix(100), privacy: .public)\"")
+        var text = result.text
+        if let applied = result.ctcAppliedTerms, !applied.isEmpty, let tokens = result.tokenTimings, !tokens.isEmpty {
+            // Boosting rewrote the text; keep only its safe one-word fixes.
+            let heard = tokens.map(\.token).joined()
+                .replacingOccurrences(of: "\u{2581}", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+            text = BoostGuard.filter(original: heard, boosted: result.text)
+        }
+        logger.info("Transcription result: \(text.count) chars — \"\(text.prefix(100), privacy: .public)\"")
 
         return TranscriptionResult(
-            text: result.text,
+            text: text,
             language: language == "auto" ? nil : language,
             duration: durationSeconds,
             segments: []
@@ -101,6 +115,73 @@ actor ParakeetEngine: TranscriptionEngine {
         let manager = AsrManager(config: .default)
         try await manager.initialize(models: models)
         asrBox.manager = manager
+        configuredVocabulary = []
+        await configureVocabularyBoosting()
+    }
+
+    // MARK: - Vocabulary boosting
+
+    func setVocabulary(_ words: [String]) async {
+        guard words != vocabulary else { return }
+        vocabulary = words
+        await configureVocabularyBoosting()
+    }
+
+    /// Point the manager's CTC rescoring at the current vocabulary. The small CTC
+    /// model it needs is downloaded in the background the first time; dictation
+    /// never waits for it, it just isn't boosted until the download finishes.
+    private func configureVocabularyBoosting() async {
+        guard let manager = asrBox.manager, vocabulary != configuredVocabulary else { return }
+        let words = vocabulary
+        guard !words.isEmpty else {
+            manager.disableVocabularyBoosting()
+            configuredVocabulary = []
+            logger.info("Vocabulary boosting off")
+            return
+        }
+
+        let directory = CtcModels.defaultCacheDirectory(for: .ctc110m)
+        guard CtcModels.modelsExist(at: directory) else {
+            startCtcDownload()
+            return
+        }
+
+        do {
+            let ctcModels = try await CtcModels.load(from: directory, variant: .ctc110m)
+            let tokenizer = try await CtcTokenizer.load(from: directory)
+            let terms = words.compactMap { word -> CustomVocabularyTerm? in
+                let ids = tokenizer.encode(word)
+                return ids.isEmpty ? nil : CustomVocabularyTerm(text: word, ctcTokenIds: ids)
+            }
+            try await manager.configureVocabularyBoosting(
+                vocabulary: CustomVocabularyContext(terms: terms),
+                ctcModels: ctcModels
+            )
+            configuredVocabulary = words
+            logger.info("Vocabulary boosting on for \(terms.count) words")
+        } catch {
+            logger.error("Vocabulary boosting unavailable: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func startCtcDownload() {
+        guard ctcDownload == nil else { return }
+        logger.info("Downloading the vocabulary boosting model")
+        ctcDownload = Task { [weak self] in
+            do {
+                try await CtcModels.download(variant: .ctc110m)
+            } catch {
+                logger.error("Vocabulary model download failed: \(error.localizedDescription, privacy: .public)")
+            }
+            await self?.ctcDownloadFinished()
+        }
+    }
+
+    private func ctcDownloadFinished() async {
+        ctcDownload = nil
+        if CtcModels.modelsExist(at: CtcModels.defaultCacheDirectory(for: .ctc110m)) {
+            await configureVocabularyBoosting()
+        }
     }
 
     func warmUp() async throws {
@@ -121,6 +202,7 @@ actor ParakeetEngine: TranscriptionEngine {
         logger.info("Parakeet engine cleanup")
         asrBox.manager?.cleanup()
         asrBox.manager = nil
+        configuredVocabulary = []
         vadBox.manager = nil
     }
 }

@@ -34,6 +34,12 @@ final class AppState {
     let modelManager = ModelManager()
     let updaterManager = UpdaterManager()
     private(set) var coordinator: TranscriptionCoordinator!
+    let voiceTrainer: VoiceTrainer
+
+    /// Set while the user is reading a training passage. That recording is handed
+    /// here instead of being pasted or saved to history.
+    private var trainingCapture: ((Result<String, Error>) -> Void)?
+    var isTrainingReading: Bool { trainingCapture != nil }
 
     // SwiftData container for saving transcriptions
     var modelContext: ModelContext?
@@ -56,11 +62,16 @@ final class AppState {
     private var terminationObserver: NSObjectProtocol?
     private var screenChangeObserver: NSObjectProtocol?
 
-    init() {
+    init(voiceTrainer: VoiceTrainer? = nil) {
         coordinator = TranscriptionCoordinator(
             settings: settings,
             modelManager: modelManager
         )
+        self.voiceTrainer = voiceTrainer ?? VoiceTrainer()
+        self.voiceTrainer.onProfileChange = { [weak self] in
+            self?.refreshVoiceTraining()
+        }
+        refreshVoiceTraining()
         hotkeyManager.onToggleRecording = { [weak self] in
             self?.toggleRecording()
         }
@@ -143,7 +154,12 @@ final class AppState {
     func toggleRecording() {
         switch state {
         case .idle, .error:
-            startRecording()
+            // With the training page open and waiting, the hotkey reads the passage.
+            if voiceTrainer.isOpen, voiceTrainer.phase == .ready || voiceTrainer.isFailed {
+                beginTrainingReading()
+            } else {
+                startRecording()
+            }
         case .recording:
             stopRecordingAndTranscribe()
         case .transcribing:
@@ -207,6 +223,13 @@ final class AppState {
             // The coordinator restores background audio even when stopping fails.
             state = .error("Failed to stop recording: \(error.localizedDescription)")
             hideNotch()
+            finishTrainingCapture(.failure(error))
+            return
+        }
+
+        if trainingCapture != nil {
+            if voiceTrainer.phase == .reading { voiceTrainer.phase = .transcribing }
+            transcribeTrainingReading(audioURL)
             return
         }
 
@@ -371,6 +394,7 @@ final class AppState {
     }
 
     func cancelRecording() {
+        finishTrainingCapture(.failure(CancellationError()))
         showingCancelWarning = false
         cancelWarningDismissTask?.cancel()
         coordinator.cancelRecording()
@@ -381,11 +405,113 @@ final class AppState {
     }
 
     func cancelTranscription() {
+        finishTrainingCapture(.failure(CancellationError()))
         transcriptionTask?.cancel()
         transcriptionTask = nil
         state = .idle
         hideNotch()
         appStateLogger.info("Transcription cancelled by user")
+    }
+
+    // MARK: - Voice training
+
+    /// Hand the latest training lessons to the dictation pipeline.
+    func refreshVoiceTraining() {
+        guard settings.useVoiceTraining else {
+            coordinator.applyVoiceTraining(corrector: .none, vocabulary: [])
+            return
+        }
+        let trainer = voiceTrainer
+        coordinator.applyVoiceTraining(
+            corrector: PersonalCorrector(corrections: trainer.learner.activeCorrections(in: trainer.profile)),
+            vocabulary: trainer.learner.vocabulary(for: trainer.profile)
+        )
+    }
+
+    /// Read the current training passage: record, transcribe, and let the trainer learn.
+    func beginTrainingReading() {
+        let trainer = voiceTrainer
+        trainer.readAgain()
+        trainer.phase = .reading
+        let started = startTrainingReading { result in
+            switch result {
+            case .success(let heard):
+                if heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    trainer.readingFailed("Speaky didn't hear anything. Check your microphone and try again.")
+                } else {
+                    trainer.finishReading(heard: heard)
+                }
+            case .failure(let error):
+                if error is CancellationError {
+                    trainer.readAgain()
+                } else {
+                    trainer.readingFailed(error.localizedDescription)
+                }
+            }
+        }
+        if !started, trainer.phase == .reading { trainer.readingFailed("Could not start recording") }
+    }
+
+    /// Stop recording the passage; the trainer moves to `.transcribing`.
+    func endTrainingReading() {
+        guard isTrainingReading, isRecording else { return }
+        voiceTrainer.phase = .transcribing
+        finishTrainingReading()
+    }
+
+    /// Start recording a training reading. The result goes to `onResult`, never to
+    /// the paste pipeline or history. Returns false if recording couldn't start.
+    @discardableResult
+    func startTrainingReading(onResult: @escaping (Result<String, Error>) -> Void) -> Bool {
+        guard !isRecording, !isTranscribing, trainingCapture == nil else { return false }
+        trainingCapture = onResult
+        startRecording()
+        guard isRecording else {
+            let message: String
+            if case .error(let text) = state { message = text } else { message = "Could not start recording" }
+            finishTrainingCapture(.failure(TranscriptionError.engineError(message)))
+            return false
+        }
+        return true
+    }
+
+    /// Stop the training reading and transcribe it.
+    func finishTrainingReading() {
+        guard isRecording, trainingCapture != nil else { return }
+        stopRecordingAndTranscribe()
+    }
+
+    private func finishTrainingCapture(_ result: Result<String, Error>) {
+        guard let capture = trainingCapture else { return }
+        trainingCapture = nil
+        capture(result)
+    }
+
+    private func transcribeTrainingReading(_ audioURL: URL) {
+        state = .transcribing
+        audioLevels = Array(repeating: 0, count: 30)
+        transcriptionTask = Task {
+            defer {
+                try? FileManager.default.removeItem(at: audioURL)
+                if !isRecording {
+                    hideNotch()
+                    recordingStartTime = nil
+                    transcriptionTask = nil
+                }
+            }
+            do {
+                let text = try await coordinator.transcribeForTraining(audioFileURL: audioURL)
+                try Task.checkCancellation()
+                state = .idle
+                finishTrainingCapture(.success(text))
+            } catch {
+                if error is CancellationError || Task.isCancelled { return }
+                appStateLogger.error("Training transcription failed: \(error.localizedDescription, privacy: .public)")
+                state = .idle
+                finishTrainingCapture(.failure(error))
+            }
+            coordinator.scheduleEngineUnload()
+        }
     }
 
     // MARK: - Recover recordings missing from history

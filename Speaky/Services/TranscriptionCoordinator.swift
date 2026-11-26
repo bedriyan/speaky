@@ -24,6 +24,11 @@ final class TranscriptionCoordinator {
     private var engineUnloadTask: Task<Void, Never>?
     private var levelMonitor: AudioLevelMonitor?
 
+    /// Corrections learned in voice training, applied to every dictation.
+    private(set) var personalCorrector = PersonalCorrector.none
+    /// The user's words, passed to the engine as a recognition hint.
+    private(set) var vocabulary: [String] = []
+
     private let settings: AppSettings
     private let inputDevices: () -> [AudioControlService.AudioDeviceInfo]
     #if DEBUG
@@ -166,9 +171,34 @@ final class TranscriptionCoordinator {
             engine = GroqEngine(apiKey: apiKey)
         }
 
+        await engine.setVocabulary(vocabulary)
         currentEngine = engine
         currentEngineModelID = model.id
         return engine
+    }
+
+    // MARK: - Voice training
+
+    /// Use what voice training learned. Called at launch and whenever the profile changes.
+    func applyVoiceTraining(corrector: PersonalCorrector, vocabulary: [String]) {
+        personalCorrector = corrector
+        guard vocabulary != self.vocabulary else { return }
+        self.vocabulary = vocabulary
+        if let engine = currentEngine {
+            Task { await engine.setVocabulary(vocabulary) }
+        }
+    }
+
+    /// Transcribe a training reading exactly as the engine hears it: no learned
+    /// corrections, no cleanup, no paste.
+    func transcribeForTraining(audioFileURL: URL) async throws -> String {
+        let engine = try await resolveEngine()
+        let result = try await transcribeWithResilience(
+            engine: engine,
+            audioFileURL: audioFileURL,
+            language: settings.language
+        )
+        return result.text
     }
 
     func unloadCurrentEngine() async {
@@ -358,7 +388,7 @@ final class TranscriptionCoordinator {
             language: settings.language
         )
 
-        var finalText = result.text
+        var finalText = personalCorrector.apply(result.text)
         if settings.cleanUpTranscriptions {
             finalText = TextCleanupService.clean(finalText)
         }
@@ -385,7 +415,7 @@ final class TranscriptionCoordinator {
         let engine = try await resolveEngine()
         let result = try await engine.transcribe(audioFileURL: audioFileURL, language: settings.language)
 
-        var finalText = result.text
+        var finalText = personalCorrector.apply(result.text)
         if settings.cleanUpTranscriptions {
             finalText = TextCleanupService.clean(finalText)
         }

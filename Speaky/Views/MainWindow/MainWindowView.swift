@@ -5,6 +5,7 @@ struct MainWindowView: View {
     @Environment(AppState.self) private var appState
     @State private var showSettings = false
     @State private var showHistory = false
+    @State private var showTraining = false
     @State private var copied = false
 
     var body: some View {
@@ -34,6 +35,16 @@ struct MainWindowView: View {
                         }
                         .buttonStyle(.handCursor)
                         .help("History")
+
+                        Button {
+                            showTraining = true
+                        } label: {
+                            Image(systemName: "graduationcap.fill")
+                                .font(.system(size: 16))
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                        .buttonStyle(.handCursor)
+                        .help("Voice training")
 
                         Spacer()
 
@@ -105,6 +116,9 @@ struct MainWindowView: View {
             }
             .navigationDestination(isPresented: $showHistory) {
                 HistoryView()
+            }
+            .navigationDestination(isPresented: $showTraining) {
+                TrainingView()
             }
         }
     }
